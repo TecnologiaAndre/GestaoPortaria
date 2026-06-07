@@ -161,6 +161,8 @@ except Exception as e:
 
 if dados_carregados:
     df_base = pd.DataFrame(dados_carregados)
+    
+    # Criamos o datetime combinando os textos brutos (Sem aplicar fuso interno do Pandas, mantendo puro)
     df_base['datetime_completo'] = pd.to_datetime(df_base['data'] + ' ' + df_base['hora'])
     df_base = df_base.sort_values('datetime_completo', ascending=True)
     
@@ -252,8 +254,10 @@ with aba_plantao:
     st.write("Confira e audite as ocorrências do seu turno de 12 horas antes de salvar a passagem definitiva.")
     
     if not df_base.empty:
-        # Filtra movimentações correspondentes estritamente ao turno de 12 horas
-        limite_12h = agora_brasilia - timedelta(hours=12)
+        # CORREÇÃO CRÍTICA AQUI: Criamos o limite de 12 horas nativo do Python mas REMOVEMOS o fuso (.replace(tzinfo=None))
+        limite_12h = (agora_brasilia - timedelta(hours=12)).replace(tzinfo=None)
+        
+        # Agora a comparação roda perfeitamente (Ambos os lados são datetimes puros sem fuso)
         df_12h = df_base[df_base['datetime_completo'] >= limite_12h]
         
         total_mov = len(df_12h)
@@ -264,7 +268,7 @@ with aba_plantao:
         c1, c2, c3 = st.columns(3)
         c1.metric("📊 Total de Movimentações (Últimas 12h)", total_mov)
         c2.metric("🟢 Saídas Registradas no Turno", saidas_turno)
-        c3.metric("🔵 Retornos Registrados no Turno", retornos_turno)
+        c3.metric("🔵 Retornos Registradas no Turno", retornos_turno)
         
         st.write("---")
         
@@ -291,13 +295,11 @@ with aba_plantao:
             botao_assinar = st.form_submit_button("🔒 Assinar e Gravar Fechamento de Plantão")
             
             if botao_assinar:
-                # Transforma o DataFrame de carros na rua em uma String única separada por vírgula
                 if not carros_na_rua.empty:
                     lista_pendentes = ", ".join(carros_na_rua['veiculo'].tolist())
                 else:
                     lista_pendentes = "Nenhum veículo pendente"
 
-                # Cria o objeto estruturado exatamente com os nomes de colunas criados no seu banco
                 dados_plantao = {
                     "data_fechamento": str(data_atual),
                     "hora_fechamento": hora_atual,
@@ -308,7 +310,6 @@ with aba_plantao:
                 }
                 
                 try:
-                    # Executa a query de gravação direta na nova tabela
                     supabase.table("passagem_plantao").insert(dados_plantao).execute()
                     
                     st.success(f"🎉 Plantão de **{st.session_state.usuario_logado}** fechado e gravado com sucesso no Supabase!")
