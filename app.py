@@ -121,9 +121,8 @@ with aba_registro:
             veiculo_sel = st.selectbox("🚗 Veículo / Placa", options=veiculos)
             
         with col2:
-            # Nomes simplificados e opções alinhadas com a sua estratégia
             destino_sel = st.selectbox("🏢 Local", options=locais)
-            retorno_sel = st.selectbox("🔄 Situação", options=["Saindo da Garagem", "Retornando à Garagem"])
+            situacao_sel = st.selectbox("🔄 Situação", options=["Saindo da Garagem", "Retornando à Garagem"])
             
             data_atual = datetime.now().date()
             hora_atual = datetime.now().time().strftime("%H:%M:%S")
@@ -132,14 +131,14 @@ with aba_registro:
         botao_salvar = st.form_submit_button(label="💾 Gravar no Controle de Portaria")
 
     if botao_salvar:
-        # Envia para as colunas existentes 'destino' e 'retorno' sem quebrar a estrutura do seu Supabase
+        # ATUALIZADO: Agora mapeado com a nova coluna 'situacao' do seu banco
         registro_movimentacao = {
             "data": str(data_atual),
             "hora": hora_atual,
             "veiculo": veiculo_sel,
             "motorista": motorista_sel,
-            "destino": destino_sel, # Grava o Local selecionado
-            "retorno": retorno_sel,  # Grava se está Saindo ou Retornando
+            "destino": destino_sel,
+            "situacao": situacao_sel,  # Alterado de 'retorno' para 'situacao'
             "porteiro": st.session_state.usuario_logado
         }
         
