@@ -8,7 +8,7 @@ import io
 # 1. Configuração da Página
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
 
-# 2. Conexão Segura com o Supabase (Estilo Nuvem)
+# 2. Conexão Secura com o Supabase
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
@@ -18,57 +18,118 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
-# 3. Inicialização do Estado da Sessão (Controle de Login)
+# 3. Inicialização do Estado da Sessão (Controle de Login e Redirecionamento)
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
+if "fase_troca_senha" not in st.session_state:
+    st.session_state.fase_troca_senha = False
+if "usuario_pendente_senha" not in st.session_state:
+    st.session_state.usuario_pendente_senha = None
 
-# 4. Função para Validar o Login usando Nome e a coluna Senha (Versão Blindada)
+# 4. Função para Validar o Login e Checar Primeiro Acesso
 def realizar_login(usuario, senha):
     try:
         usuario_limpo = usuario.strip()
         senha_limpa = senha.strip()
         
+        # Buscamos o nome e também a flag de primeiro acesso
         resposta = supabase.table("cadastro_porteiros")\
-            .select("nome_porteiro")\
+            .select("nome_porteiro, primeiro_acesso")\
             .eq("nome_porteiro", usuario_limpo)\
             .eq("senha", senha_limpa)\
             .execute()
         
         if resposta.data:
-            st.session_state.autenticado = True
-            st.session_state.usuario_logado = resposta.data[0]["nome_porteiro"]
-            st.success(f"🔓 Bem-vindo, {st.session_state.usuario_logado}!")
-            st.rerun()
+            registro = resposta.data[0]
+            
+            # Se for o primeiro acesso, intercepta o login e força a troca
+            if registro.get("primeiro_acesso") is True:
+                st.session_state.fase_troca_senha = True
+                st.session_state.usuario_pendente_senha = registro["nome_porteiro"]
+                st.rerun()
+            else:
+                # Login normal autorizado
+                st.session_state.autenticado = True
+                st.session_state.usuario_logado = registro["nome_porteiro"]
+                st.success(f"🔓 Bem-vindo, {st.session_state.usuario_logado}!")
+                st.rerun()
         else:
             st.error("❌ Usuário ou senha incorretos. Verifique os dados informados.")
     except Exception as e:
         st.error(f"Erro ao conectar com a tabela de autenticação: {e}")
 
-# 5. TELA DE LOGIN OBRIGATÓRIA
+# 5. TELA DE LOGIN OBRIGATÓRIA / TROCA DE SENHA
 if not st.session_state.autenticado:
-    st.markdown("<h2 style='text-align: center;'>🛃 Acesso Restrito - Portaria</h2>", unsafe_allow_html=True)
     
-    _, col_central, _ = st.columns([1, 2, 1])
-    
-    with col_central:
-        with st.form(key="form_login", clear_on_submit=False):
-            usuario_input = st.text_input("👤 Nome do Porteiro (Usuário)")
-            senha_input = st.text_input("🔑 Senha", type="password")
-            botao_login = st.form_submit_button("Efetuar Login")
+    # Sub-tela: Forçar a Troca de Senha Obrigatória
+    if st.session_state.fase_troca_senha:
+        st.markdown("<h2 style='text-align: center;'>🔒 Atualização de Segurança Obrigatória</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Por segurança, crie uma senha pessoal.</p>", unsafe_allow_html=True)
+        
+        _, col_central, _ = st.columns([1, 1.8, 1])
+        with col_central:
+            with st.form(key="form_troca_senha", clear_on_submit=True):
+                st.info(f"Usuário: **{st.session_state.usuario_pendente_senha}**")
+                nova_senha = st.text_input("Digite sua nova senha pessoal:", type="password")
+                confirma_senha = st.text_input("Confirme a nova senha:", type="password")
+                botao_mudar = st.form_submit_button("💾 Salvar Nova Senha e Entrar")
+                
+                if botao_mudar:
+                    if not nova_senha or not confirma_senha:
+                        st.warning("Por favor, preencha ambos os campos de senha.")
+                    elif nova_senha != confirma_senha:
+                        st.error("❌ As senhas digitadas não coincidem. Tente novamente.")
+                    elif len(nova_senha) < 4:
+                        st.warning("Por segurança, escolha uma senha com pelo menos 4 caracteres.")
+                    else:
+                        try:
+                            # Atualiza a senha no banco e desmarca a flag de primeiro acesso
+                            supabase.table("cadastro_porteiros")\
+                                .update({"senha": nova_senha.strip(), "primeiro_acesso": False})\
+                                .eq("nome_porteiro", st.session_state.usuario_pendente_senha)\
+                                .execute()
+                            
+                            # Autentica automaticamente após o sucesso
+                            st.session_state.autenticado = True
+                            st.session_state.usuario_logado = st.session_state.usuario_pendente_senha
+                            
+                            # Limpa os estados temporários de troca de senha
+                            st.session_state.fase_troca_senha = False
+                            st.session_state.usuario_pendente_senha = None
+                            
+                            st.success("🎉 Senha alterada com sucesso! Bem-vindo ao sistema.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao salvar nova senha no banco: {e}")
             
-            if botao_login:
-                if usuario_input and senha_input:
-                    realizar_login(usuario_input, senha_input)
-                else:
-                    st.warning("Por favor, preencha os campos de Usuário e Senha.")
-                    
-    st.stop()
+            if st.button("⬅️ Cancelar e Voltar"):
+                st.session_state.fase_troca_senha = False
+                st.session_state.usuario_pendente_senha = None
+                st.rerun()
+        st.stop()
+
+    # Tela de Login Padrão (Caso não esteja em fase de troca de senha)
+    else:
+        st.markdown("<h2 style='text-align: center;'>🛃 Acesso Restrito - Portaria</h2>", unsafe_allow_html=True)
+        
+        _, col_central, _ = st.columns([1, 2, 1])
+        with col_central:
+            with st.form(key="form_login", clear_on_submit=False):
+                usuario_input = st.text_input("👤 Nome do Porteiro (Usuário)")
+                senha_input = st.text_input("🔑 Senha", type="password")
+                botao_login = st.form_submit_button("Efetuar Login")
+                
+                if botao_login:
+                    if usuario_input and senha_input:
+                        realizar_login(usuario_input, senha_input)
+                    else:
+                        st.warning("Por favor, preencha os campos de Usuário e Senha.")
+        st.stop()
 
 # --- 🔓 ÁREA SEGURA (SÓ ACESSÍVEL SE ESTIVER AUTENTICADO) ---
 
-# Fuso Horário Padrão do Sistema (Brasília)
 fuso_brasilia = ZoneInfo("America/Sao_Paulo")
 agora_brasilia = datetime.now(fuso_brasilia)
 data_atual = agora_brasilia.date()
@@ -161,8 +222,6 @@ except Exception as e:
 
 if dados_carregados:
     df_base = pd.DataFrame(dados_carregados)
-    
-    # Criamos o datetime combinando os textos brutos (Sem aplicar fuso interno do Pandas, mantendo puro)
     df_base['datetime_completo'] = pd.to_datetime(df_base['data'] + ' ' + df_base['hora'])
     df_base = df_base.sort_values('datetime_completo', ascending=True)
     
@@ -254,17 +313,13 @@ with aba_plantao:
     st.write("Confira e audite as ocorrências do seu turno de 12 horas antes de salvar a passagem definitiva.")
     
     if not df_base.empty:
-        # CORREÇÃO CRÍTICA AQUI: Criamos o limite de 12 horas nativo do Python mas REMOVEMOS o fuso (.replace(tzinfo=None))
         limite_12h = (agora_brasilia - timedelta(hours=12)).replace(tzinfo=None)
-        
-        # Agora a comparação roda perfeitamente (Ambos os lados são datetimes puros sem fuso)
         df_12h = df_base[df_base['datetime_completo'] >= limite_12h]
         
         total_mov = len(df_12h)
         saidas_turno = len(df_12h[df_12h['situacao'] == "Saindo da Garagem"])
         retornos_turno = len(df_12h[df_12h['situacao'] == "Retornando à Garagem"])
         
-        # Grid Estatístico de Auditoria Automática
         c1, c2, c3 = st.columns(3)
         c1.metric("📊 Total de Movimentações (Últimas 12h)", total_mov)
         c2.metric("🟢 Saídas Registradas no Turno", saidas_turno)
@@ -272,7 +327,6 @@ with aba_plantao:
         
         st.write("---")
         
-        # Mapeamento em Tempo Real de Veículos Pendentes na Rua
         st.markdown("### 🚨 Veículos que se encontram na RUA atualmente:")
         veiculos_ultimos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
         carros_na_rua = veiculos_ultimos[veiculos_ultimos['situacao'] == "Saindo da Garagem"]
@@ -285,12 +339,11 @@ with aba_plantao:
         
         st.write("---")
         
-        # Form de Fechamento Definitivo com Integração Direta no Supabase
         st.markdown("### ✍️ Livro de Ocorrências e Assinatura Digital do Turno")
         with st.form(key="form_passagem_plantao"):
             obs_texto = st.text_area(
                 "Insira avisos, problemas de infraestrutura ou recados para o próximo turno:", 
-                placeholder="Ex: Deixei a chave do carro X no quadro B. Portão 1 apresentou estalos ao fechar às 21:00..."
+                placeholder="Ex: Deixei a chave do carro X no quadro B..."
             )
             botao_assinar = st.form_submit_button("🔒 Assinar e Gravar Fechamento de Plantão")
             
@@ -311,7 +364,6 @@ with aba_plantao:
                 
                 try:
                     supabase.table("passagem_plantao").insert(dados_plantao).execute()
-                    
                     st.success(f"🎉 Plantão de **{st.session_state.usuario_logado}** fechado e gravado com sucesso no Supabase!")
                     st.info("Deslogue do sistema clicando no botão '🚪 Encerrar Turno' lá em cima para dar lugar ao próximo operador.")
                 except Exception as e:
