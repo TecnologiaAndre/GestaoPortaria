@@ -1,12 +1,14 @@
 import streamlit as st
 from supabase import create_client, Client
-from datetime import datetime
-from zoneinfo import ZoneInfo  # Biblioteca padrão para fuso horário
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import pandas as pd
+import plotly.express as px  # Para o Gráfico de Ocupação
 
 # 1. Configuração da Página
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
 
-# 2. Conexão Segura com o Supabase (Estilo Nuvem)
+# 2. Conexão Secura com o Supabase (Estilo Nuvem)
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
@@ -120,7 +122,6 @@ with aba_registro:
             destino_sel = st.selectbox("🏢 Local", options=locais)
             situacao_sel = st.selectbox("🔄 Situação", options=["Saindo da Garagem", "Retornando à Garagem"])
             
-            # CORREÇÃO AQUI: Forçando a captura exata do horário de Brasília
             fuso_brasilia = ZoneInfo("America/Sao_Paulo")
             agora_brasilia = datetime.now(fuso_brasilia)
             
@@ -148,15 +149,122 @@ with aba_registro:
             st.error(f"❌ Erro ao salvar movimentação: {e}")
 
 with aba_historico:
-    st.subheader("Últimos Registros")
-    if st.button("🔄 Atualizar Tabela"):
-        st.rerun()
+    st.subheader("Laboratório de Testes Visuais")
+    
+    col_refresh, col_selector = st.columns([1, 4])
+    with col_refresh:
+        if st.button("🔄 Atualizar Dados"):
+            st.rerun()
+            
+    with col_selector:
+        # Seletor dinâmico para você testar as 3 visões na hora
+        visao_selecionada = st.radio(
+            "Escolha o modelo de visualização para testar:",
+            options=["1. Cartões de Status (Metrics)", "2. Linha do Tempo (Feed)", "3. Gráfico de Ocupação"],
+            horizontal=True
+        )
+        
+    st.write("---")
         
     try:
-        resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(20).execute()
+        resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(40).execute()
+        
         if resposta.data:
-            st.dataframe(resposta.data, use_container_width=True)
+            df = pd.DataFrame(resposta.data)
+            df['datetime_completo'] = pd.to_datetime(df['data'] + ' ' + df['hora'])
+            df = df.sort_values('datetime_completo', ascending=True)
+            
+            df['minutos_duracao'] = 0
+            df['tempo_formatado'] = "-"
+            
+            # Cálculo de background das durações
+            for i in range(len(df)):
+                linha_atual = df.iloc[i]
+                veiculo_atual = linha_atual['veiculo']
+                time_atual = linha_atual['datetime_completo']
+                
+                df_anterior = df[(df['veiculo'] == veiculo_atual) & (df['datetime_completo'] < time_atual)]
+                if not df_anterior.empty:
+                    ultima_linha = df_anterior.iloc[-1]
+                    diferenca = time_atual - ultima_linha['datetime_completo']
+                    total_segundos = int(diferenca.total_seconds())
+                    df.at[df.index[i], 'minutos_duracao'] = total_segundos // 60
+                    
+                    horas = total_segundos // 3600
+                    minutos = (total_segundos % 3600) // 60
+                    df.at[df.index[i], 'tempo_formatado'] = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
+
+            df = df.sort_values('id', ascending=False)
+
+            # ================= OPÇÃO 1: CARTÕES DE STATUS =================
+            if visao_selecionada == "1. Cartões de Status (Metrics)":
+                st.markdown("### 📋 Status Atual da Frota (Última Posição de Cada Veículo)")
+                veiculos_unicos = df.drop_duplicates(subset=['veiculo'], keep='first')
+                
+                cols = st.columns(3)
+                for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
+                    col_atual = cols[idx % 3]
+                    with col_atual:
+                        if car['situacao'] == "Saindo da Garagem":
+                            status_msg = "🟢 EM TRÂNSITO (RUA)"
+                            sub_msg = f"Fora há: {car['tempo_formatado']}" if car['tempo_formatado'] != "-" else "Acabou de sair"
+                        else:
+                            status_msg = "🔵 NA GARAGEM (PÁTIO)"
+                            sub_msg = f"Estacionado há: {car['tempo_formatado']}" if car['tempo_formatado'] != "-" else "Acabou de entrar"
+                            
+                        with st.container(border=True):
+                            st.markdown(f"### {car['veiculo']}")
+                            st.markdown(f"**Motorista:** {car['motorista']}")
+                            st.markdown(f"**Último Local:** {car['destino']}")
+                            st.metric(label=status_msg, value=sub_msg)
+
+            # ================= OPÇÃO 2: LINHA DO TEMPO (FEED) =================
+            elif visao_selecionada == "2. Linha do Tempo (Feed)":
+                st.markdown("### 🕒 Feed de Movimentações Recentes (Estilo Linha do Tempo)")
+                
+                for _, linha in df.head(15).iterrows():
+                    data_f = datetime.strptime(linha['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                    
+                    if linha['situacao'] == "Saindo da Garagem":
+                        icon, cor, acao = "🟢", "#d4edda", "SAÍDA REGISTRADA"
+                        tempo_msg = f"⏱️ Fica no pátio antes de sair: **{linha['tempo_formatado']}**" if linha['tempo_formatado'] != "-" else ""
+                    else:
+                        icon, cor, acao = "🔵", "#cce5ff", "RETORNO À GARAGEM"
+                        tempo_msg = f"⏱️ Tempo total da viagem na rua: **{linha['tempo_formatado']}**" if linha['tempo_formatado'] != "-" else ""
+                        
+                    st.markdown(
+                        f"""
+                        <div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #155724 if icon=='🟢' else #004085;">
+                            <h4 style="margin: 0;">{icon} {acao} — {data_f} às {linha['hora']}</h4>
+                            <p style="margin: 5px 0 0 0;"><b>Veículo:</b> {linha['veiculo']} | <b>Motorista:</b> {linha['motorista']}</p>
+                            <p style="margin: 2px 0 0 0;"><b>Local informado:</b> {linha['destino']} | <b>Porteiro:</b> {linha['porteiro']}</p>
+                            <p style="margin: 5px 0 0 0; color: #555; font-style: italic;">{tempo_msg}</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+            # ================= OPÇÃO 3: GRÁFICO DE OCUPAÇÃO =================
+            elif visao_selecionada == "3. Gráficos de Barra de Ocupação":
+                st.markdown("### 📊 Análise de Tempo de Pátio vs. Tempo de Rua (Em minutos)")
+                
+                df_validos = df[df['minutos_duracao'] > 0]
+                if not df_validos.empty:
+                    fig = px.bar(
+                        df_validos.head(20),
+                        x="veiculo",
+                        y="minutos_duracao",
+                        color="situacao",
+                        title="Duração das Últimas Movimentações por Veículo",
+                        labels={"minutos_duracao": "Minutos Corridos", "veiculo": "Veículo", "situacao": "Evento"},
+                        color_discrete_map={"Saindo da Garagem": "#2ecc71", "Retornando à Garagem": "#3498db"},
+                        barmode="group"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Ainda não há dados acumulados suficientes para gerar o gráfico de tempo.")
+                    
         else:
             st.info("Nenhum registro na tabela de controle ainda.")
     except Exception as e:
-        st.error(f"Erro ao buscar histórico: {e}")
+        st.error(f"Erro ao carregar laboratório de testes: {e}")
