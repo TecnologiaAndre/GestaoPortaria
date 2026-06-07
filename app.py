@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import io
 import hashlib
+import re
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO E INFRAESTRUTURA
@@ -31,6 +32,18 @@ supabase = init_supabase()
 def gerar_hash_senha(senha: str) -> str:
     """Criptografia padrão para senhas definitivas (atendimento à LGPD)."""
     return hashlib.sha256(senha.strip().encode('utf-8')).hexdigest()
+
+def validar_complexidade_senha(senha: str) -> tuple[bool, str]:
+    """Valida se a senha atende aos critérios de segurança (Maiúscula, Minúscula e Número)."""
+    if len(senha) < 6:
+        return False, "❌ A nova senha deve ter pelo menos 6 caracteres."
+    if not re.search(r'[A-Z]', senha):
+        return False, "❌ A senha deve conter pelo menos uma letra MAIÚSCULA."
+    if not re.search(r'[a-z]', senha):
+        return False, "❌ A senha deve conter pelo menos uma letra minúscula."
+    if not re.search(r'[0-9]', senha):
+        return False, "❌ A senha deve conter pelo menos um número."
+    return True, "Senha válida!"
 
 # Inicialização do Session State para persistência de estado entre interações do Streamlit.
 if "autenticado" not in st.session_state:
@@ -95,7 +108,7 @@ if not st.session_state.autenticado:
     # Sub-tela 1: Forçar Atualização de Credenciais no Primeiro Acesso
     if st.session_state.fase_troca_senha:
         st.markdown("<h2 style='text-align: center;'>🔒 Atualização de Segurança Obrigatória (LGPD)</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Por segurança, defina uma senha pessoal irreversível.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Sua nova senha deve conter no mínimo 6 caracteres, incluindo letras maiúsculas, minúsculas e números.</p>", unsafe_allow_html=True)
         
         _, col_central, _ = st.columns([1, 1.8, 1])
         with col_central:
@@ -110,27 +123,31 @@ if not st.session_state.autenticado:
                         st.warning("Por favor, preencha ambos os campos de senha.")
                     elif nova_senha != confirma_senha:
                         st.error("❌ As senhas digitadas não coincidem. Tente novamente.")
-                    elif len(nova_senha) < 4:
-                        st.warning("Por segurança, escolha uma senha com pelo menos 4 caracteres.")
                     else:
-                        try:
-                            # A senha trafega via SSL e é convertida localmente antes do INSERT no Supabase
-                            nova_senha_hash = gerar_hash_senha(nova_senha)
-                            
-                            supabase.table("cadastro_porteiros")\
-                                .update({"senha": nova_senha_hash, "primeiro_acesso": False})\
-                                .eq("nome_porteiro", st.session_state.usuario_pendente_senha)\
-                                .execute()
-                            
-                            st.session_state.autenticado = True
-                            st.session_state.usuario_logado = st.session_state.usuario_pendente_senha
-                            st.session_state.fase_troca_senha = False
-                            st.session_state.usuario_pendente_senha = None
-                            
-                            st.success("🎉 Senha criptografada e salva com sucesso! Bem-vindo.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao salvar nova senha no banco: {e}")
+                        # Executa a checagem com Regex das regras de complexidade estabelecidas
+                        senha_valida, mensagem_erro = validar_complexidade_senha(nova_senha)
+                        
+                        if not senha_valida:
+                            st.error(mensagem_erro)
+                        else:
+                            try:
+                                # A senha trafega via SSL e é convertida localmente antes do INSERT no Supabase
+                                nova_senha_hash = gerar_hash_senha(nova_senha)
+                                
+                                supabase.table("cadastro_porteiros")\
+                                    .update({"senha": nova_senha_hash, "primeiro_acesso": False})\
+                                    .eq("nome_porteiro", st.session_state.usuario_pendente_senha)\
+                                    .execute()
+                                
+                                st.session_state.autenticado = True
+                                st.session_state.usuario_logado = st.session_state.usuario_pendente_senha
+                                st.session_state.fase_troca_senha = False
+                                st.session_state.usuario_pendente_senha = None
+                                
+                                st.success("🎉 Senha criptografada e salva com sucesso! Bem-vindo.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao salvar nova senha no banco: {e}")
             
             if st.button("⬅️ Cancelar e Voltar"):
                 st.session_state.fase_troca_senha = False
@@ -251,10 +268,6 @@ with aba_registro:
 # ==============================================================================
 # LOGICA CENTRAL: ENGENHARIA DE TEMPOS E ESTADOS DOS VEÍCULOS
 # ==============================================================================
-# Contexto Técnico: Como o banco salva eventos isolados (linhas de logs), nós reconstruímos a linha do tempo
-# de forma programática. O algoritmo ordena os registros por tempo ascendente e varre comparando o estado atual 
-# com o estado anterior daquele mesmo veículo para calcular o tempo decorrido na rua ou no pátio.
-
 try:
     resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(60).execute()
     dados_carregados = resposta.data if resposta.data else []
@@ -276,7 +289,7 @@ if dados_carregados:
     for i in range(len(df_base)):
         linha_atual = df_base.iloc[i]
         veiculo_atual = linha_atual['veiculo']
-        sit_atual = linha_atual['situacao'] # Correção do bug 'presidential_sit' feita aqui
+        sit_atual = linha_atual['situacao']
         time_atual = linha_atual['datetime_completo']
         
         # Localiza o histórico cronológico exclusivo deste veículo específico
@@ -324,7 +337,6 @@ with aba_historico:
             st.dataframe(df_export, use_container_width=True)
             
         elif visao_definiva == "🗂️ Cartões de Status (Metrics)":
-            # Filtro para isolar apenas o último status conhecido de cada veículo (Visão de Pátio em Tempo Real)
             veiculos_unicos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
             cols = st.columns(3)
             for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
@@ -353,7 +365,6 @@ with aba_historico:
         
         st.write("---")
         
-        # Renderização do arquivo em memória para download via Streamlit sem salvar em disco local.
         buffer_excel = io.BytesIO()
         with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
             df_export.to_excel(writer, index=False, sheet_name='Controle Portaria')
@@ -365,10 +376,9 @@ with aba_historico:
 # ================= ABA 3: PASSAGEM DE PLANTÃO INTEGRADA =================
 with aba_plantao:
     st.subheader("🔄 Fechamento e Passagem de Turno (Últimas 12 Horas)")
-    st.write("Confira e audite as ocorrências do seu turno de 12 horas antes de salvar a passagem definitiva.")
+    st.write("Confira e audite as ocorrências do seu turno de 12 hours antes de salvar a passagem definitiva.")
     
     if not df_base.empty:
-        # Filtro de auditoria retroativa com base no fuso-horário local configurado no topo.
         limite_12h = (agora_brasilia - timedelta(hours=12)).replace(tzinfo=None)
         df_12h = df_base[df_base['datetime_completo'] >= limite_12h]
         
@@ -384,7 +394,6 @@ with aba_plantao:
         st.write("---")
         
         st.markdown("### 🚨 Veículos que se encontram na RUA atualmente:")
-        # Identifica veículos órfãos de retorno para alertar o operador que está assumindo o turno.
         veiculos_ultimos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
         carros_na_rua = veiculos_ultimos[veiculos_ultimos['situacao'] == "Saindo da Garagem"]
         
