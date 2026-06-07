@@ -75,7 +75,7 @@ if not st.session_state.autenticado:
 def carregar_dados_cadastro():
     try:
         motoristas_data = supabase.table("cadastro_motoristas").select("nome_motorista, matricula").order("nome_motorista").execute().data
-        veiculos_data = supabase.table("cadastro_veiculos").select("veiculo, block").order("veiculo").execute().data
+        veiculos_data = supabase.table("cadastro_veiculos").select("veiculo, placa").order("veiculo").execute().data
         locais_data = supabase.table("cadastro_locais").select("nome_local").order("nome_local").execute().data
         
         lista_motoristas = [f"{m['nome_motorista']} ({m['matricula']})" for m in motoristas_data if m.get("nome_motorista")]
