@@ -1,12 +1,12 @@
 import streamlit as st
 from supabase import create_client, Client
 from datetime import datetime
+from zoneinfo import ZoneInfo  # Biblioteca padrão para fuso horário
 
 # 1. Configuração da Página
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
 
 # 2. Conexão Segura com o Supabase (Estilo Nuvem)
-# O Streamlit Cloud lerá automaticamente essas variáveis da área de 'Secrets'
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
@@ -25,18 +25,15 @@ if "usuario_logado" not in st.session_state:
 # 4. Função para Validar o Login usando Nome e a coluna Senha (Versão Blindada)
 def realizar_login(usuario, senha):
     try:
-        # Limpa espaços em branco acidentais no início ou fim do texto
         usuario_limpo = usuario.strip()
         senha_limpa = senha.strip()
         
-        # Busca no banco filtrando por nome E por senha idêntica
         resposta = supabase.table("cadastro_porteiros")\
             .select("nome_porteiro")\
             .eq("nome_porteiro", usuario_limpo)\
             .eq("senha", senha_limpa)\
             .execute()
         
-        # Se retornar dados, significa que a combinação usuário + senha está correta
         if resposta.data:
             st.session_state.autenticado = True
             st.session_state.usuario_logado = resposta.data[0]["nome_porteiro"]
@@ -51,7 +48,6 @@ def realizar_login(usuario, senha):
 if not st.session_state.autenticado:
     st.markdown("<h2 style='text-align: center;'>🛃 Acesso Restrito - Portaria</h2>", unsafe_allow_html=True)
     
-    # Centraliza o formulário na tela para ficar visualmente limpo
     _, col_central, _ = st.columns([1, 2, 1])
     
     with col_central:
@@ -66,7 +62,7 @@ if not st.session_state.autenticado:
                 else:
                     st.warning("Por favor, preencha os campos de Usuário e Senha.")
                     
-    st.stop() # Bloqueia absolutamente tudo abaixo caso o porteiro não esteja logado
+    st.stop()
 
 # --- 🔓 ÁREA SEGURA (SÓ ACESSÍVEL SE ESTIVER AUTENTICADO) ---
 
@@ -124,21 +120,24 @@ with aba_registro:
             destino_sel = st.selectbox("🏢 Local", options=locais)
             situacao_sel = st.selectbox("🔄 Situação", options=["Saindo da Garagem", "Retornando à Garagem"])
             
-            data_atual = datetime.now().date()
-            hora_atual = datetime.now().time().strftime("%H:%M:%S")
+            # CORREÇÃO AQUI: Forçando a captura exata do horário de Brasília
+            fuso_brasilia = ZoneInfo("America/Sao_Paulo")
+            agora_brasilia = datetime.now(fuso_brasilia)
+            
+            data_atual = agora_brasilia.date()
+            hora_atual = agora_brasilia.time().strftime("%H:%M:%S")
             st.info(f"📅 **Data:** {data_atual.strftime('%d/%m/%Y')} | ⏰ **Hora:** {hora_atual}")
 
         botao_salvar = st.form_submit_button(label="💾 Gravar no Controle de Portaria")
 
     if botao_salvar:
-        # ATUALIZADO: Agora mapeado com a nova coluna 'situacao' do seu banco
         registro_movimentacao = {
             "data": str(data_atual),
             "hora": hora_atual,
             "veiculo": veiculo_sel,
             "motorista": motorista_sel,
             "destino": destino_sel,
-            "situacao": situacao_sel,  # Alterado de 'retorno' para 'situacao'
+            "situacao": situacao_sel,
             "porteiro": st.session_state.usuario_logado
         }
         
