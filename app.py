@@ -1,6 +1,6 @@
 import streamlit as st
 from supabase import create_client, Client
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
 import io
@@ -68,6 +68,12 @@ if not st.session_state.autenticado:
 
 # --- 🔓 ÁREA SEGURA (SÓ ACESSÍVEL SE ESTIVER AUTENTICADO) ---
 
+# Fuso Horário Padrão do Sistema (Brasília)
+fuso_brasilia = ZoneInfo("America/Sao_Paulo")
+agora_brasilia = datetime.now(fuso_brasilia)
+data_atual = agora_brasilia.date()
+hora_atual = agora_brasilia.time().strftime("%H:%M:%S")
+
 # 6. Busca de Dados das Tabelas de Cadastro
 @st.cache_data(ttl=60)
 def carregar_dados_cadastro():
@@ -104,8 +110,10 @@ with col_user:
 
 st.write("---")
 
-aba_registro, aba_historico = st.tabs(["📝 Registrar Movimentação", "📊 Histórico de Registros"])
+# Abas do Sistema
+aba_registro, aba_historico, aba_plantao = st.tabs(["📝 Registrar Movimentação", "📊 Histórico de Registros", "🔄 Passagem de Plantão"])
 
+# ================= ABA 1: REGISTRO DE MOVIMENTAÇÃO =================
 with aba_registro:
     if st.button("🔄 Atualizar Listas"):
         st.cache_data.clear()
@@ -122,11 +130,6 @@ with aba_registro:
             destino_sel = st.selectbox("🏢 Local", options=locais)
             situacao_sel = st.selectbox("🔄 Situação", options=["Saindo da Garagem", "Retornando à Garagem"])
             
-            fuso_brasilia = ZoneInfo("America/Sao_Paulo")
-            agora_brasilia = datetime.now(fuso_brasilia)
-            
-            data_atual = agora_brasilia.date()
-            hora_atual = agora_brasilia.time().strftime("%H:%M:%S")
             st.info(f"📅 **Data:** {data_atual.strftime('%d/%m/%Y')} | ⏰ **Hora:** {hora_atual}")
 
         botao_salvar = st.form_submit_button(label="💾 Gravar no Controle de Portaria")
@@ -148,142 +151,169 @@ with aba_registro:
         except Exception as e:
             st.error(f"❌ Erro ao salvar movimentação: {e}")
 
-with aba_historico:
-    st.subheader("Painel de Monitoramento e Histórico")
+# Processamento de Engenharia de Tempos (Comum para as Abas 2 e 3)
+try:
+    resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(60).execute()
+    dados_carregados = resposta.data if resposta.data else []
+except Exception as e:
+    dados_carregados = []
+    st.error(f"Erro ao conectar com o Supabase: {e}")
+
+if dados_carregados:
+    df_base = pd.DataFrame(dados_carregados)
+    df_base['datetime_completo'] = pd.to_datetime(df_base['data'] + ' ' + df_base['hora'])
+    df_base = df_base.sort_values('datetime_completo', ascending=True)
     
-    # 1. BARRA DE PREFERÊNCIAS DO OPERADOR
-    col_refresh, col_selector = st.columns([1, 4])
-    with col_refresh:
-        if st.button("🔄 Atualizar Dados", key="btn_refresh_hist"):
-            st.rerun()
+    df_base['minutos_duracao'] = 0
+    df_base['Tempo no Pátio'] = "-"
+    df_base['Tempo em Trânsito'] = "-"
+    
+    for i in range(len(df_base)):
+        linha_atual = df_base.iloc[i]
+        veiculo_atual = linha_atual['veiculo']
+        sit_atual = linha_atual['situacao']
+        time_atual = linha_atual['datetime_completo']
+        
+        df_anterior = df_base[(df_base['veiculo'] == veiculo_atual) & (df_base['datetime_completo'] < time_atual)]
+        if not df_anterior.empty:
+            ultima_linha = df_anterior.iloc[-1]
+            sit_anterior = ultima_linha['situacao']
+            diferenca = time_atual - ultima_linha['datetime_completo']
+            total_segundos = int(diferenca.total_seconds())
             
-    with col_selector:
+            df_base.at[df_base.index[i], 'minutos_duracao'] = total_segundos // 60
+            horas = total_segundos // 3600
+            minutos = (total_segundos % 3600) // 60
+            tempo_formatado = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
+            
+            if sit_atual == "Retornando à Garagem" and sit_anterior == "Saindo da Garagem":
+                df_base.at[df_base.index[i], 'Tempo em Trânsito'] = tempo_formatado
+            elif sit_atual == "Saindo da Garagem" and sit_anterior == "Retornando à Garagem":
+                df_base.at[df_base.index[i], 'Tempo no Pátio'] = tempo_formatado
+
+    df_base = df_base.sort_values('id', ascending=False)
+    df_export = df_base.drop(columns=['datetime_completo', 'minutos_duracao'])
+    colunas_ordenadas = ['id', 'data', 'hora', 'veiculo', 'motorista', 'destino', 'situacao', 'Tempo no Pátio', 'Tempo em Trânsito', 'porteiro']
+    df_export = df_export.reindex(columns=colunas_ordenadas)
+else:
+    df_base = pd.DataFrame()
+    df_export = pd.DataFrame()
+
+# ================= ABA 2: HISTÓRICO PERSONALIZÁVEL =================
+with aba_historico:
+    if not df_export.empty:
+        st.subheader("Painel de Monitoramento e Histórico")
         visao_definiva = st.radio(
             "Selecione o seu estilo preferido de exibição:",
             options=["📋 Tabela Clássica", "🗂️ Cartões de Status (Metrics)", "🕒 Linha do Tempo (Feed)", "📊 Gráfico de Ocupação"],
             horizontal=True,
-            key="usuario_preferencia_visual"
+            key="usuario_pref_vis"
         )
+        st.write("---")
         
-    st.write("---")
-        
-    try:
-        # Puxa os dados brutos e realiza a engenharia de tempo em background
-        resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(50).execute()
-        
-        if resposta.data:
-            df = pd.DataFrame(resposta.data)
-            df['datetime_completo'] = pd.to_datetime(df['data'] + ' ' + df['hora'])
-            df = df.sort_values('datetime_completo', ascending=True)
-            
-            df['minutos_duracao'] = 0
-            df['Tempo no Pátio'] = "-"
-            df['Tempo em Trânsito'] = "-"
-            
-            for i in range(len(df)):
-                linha_atual = df.iloc[i]
-                veiculo_atual = linha_atual['veiculo']
-                sit_atual = linha_atual['situacao']
-                time_atual = linha_atual['datetime_completo']
-                
-                df_anterior = df[(df['veiculo'] == veiculo_atual) & (df['datetime_completo'] < time_atual)]
-                if not df_anterior.empty:
-                    ultima_linha = df_anterior.iloc[-1]
-                    sit_anterior = ultima_linha['situacao']
-                    diferenca = time_atual - ultima_linha['datetime_completo']
-                    total_segundos = int(diferenca.total_seconds())
-                    
-                    df.at[df.index[i], 'minutos_duracao'] = total_segundos // 60
-                    horas = total_segundos // 3600
-                    minutos = (total_segundos % 3600) // 60
-                    tempo_formatado = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
-                    
-                    if sit_atual == "Retornando à Garagem" and sit_anterior == "Saindo da Garagem":
-                        df.at[df.index[i], 'Tempo em Trânsito'] = tempo_formatado
-                    elif sit_atual == "Saindo da Garagem" and sit_anterior == "Retornando à Garagem":
-                        df.at[df.index[i], 'Tempo no Pátio'] = tempo_formatado
-
-            # Ordena de volta para mostrar o mais novo primeiro
-            df = df.sort_values('id', ascending=False)
-            
-            # Prepara a estrutura limpa de visualização / exportação
-            df_export = df.drop(columns=['datetime_completo', 'minutos_duracao'])
-            colunas_ordenadas = ['id', 'data', 'hora', 'veiculo', 'motorista', 'destino', 'situacao', 'Tempo no Pátio', 'Tempo em Trânsito', 'porteiro']
-            df_export = df_export.reindex(columns=colunas_ordenadas)
-
-            # ================= RENDERIZAÇÃO CONFORME ESCOLHA DO USUÁRIO =================
-            
-            if visao_definiva == "📋 Tabela Clássica":
-                st.dataframe(df_export, use_container_width=True)
-
-            elif visao_definiva == "🗂️ Cartões de Status (Metrics)":
-                st.markdown("### Posição Atual dos Veículos")
-                veiculos_unicos = df.drop_duplicates(subset=['veiculo'], keep='first')
-                cols = st.columns(3)
-                for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
-                    col_atual = cols[idx % 3]
-                    with col_atual:
-                        if car['situacao'] == "Saindo da Garagem":
-                            status_msg, cor_badge = "🟢 EM TRÂNSITO (RUA)", "Fora há: "
-                            sub_val = car['Tempo em Trânsito'] if car['Tempo em Trânsito'] != "-" else "Em rota"
-                        else:
-                            status_msg, cor_badge = "🔵 NA GARAGEM (PÁTIO)", "Parado há: "
-                            sub_val = car['Tempo no Pátio'] if car['Tempo no Pátio'] != "-" else "Estacionado"
-                            
-                        with st.container(border=True):
-                            st.markdown(f"### {car['veiculo']}")
-                            st.markdown(f"👤 **Motorista:** {car['motorista']}  \n🏢 **Local:** {car['destino']}")
-                            st.metric(label=status_msg, value=f"{cor_badge}{sub_val}")
-
-            elif visao_definiva == "🕒 Linha do Tempo (Feed)":
-                st.markdown("### Feed de Ocorrências Recentes")
-                for _, linha in df_export.head(15).iterrows():
-                    data_f = datetime.strptime(linha['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
-                    if linha['situacao'] == "Saindo da Garagem":
-                        icon, cor, acao = "🟢", "#d4edda", "SAÍDA DE VEÍCULO"
-                        tempo_msg = f"⏱️ Tempo de permanência prévia no pátio: **{linha['Tempo no Pátio']}**" if linha['Tempo no Pátio'] != "-" else ""
+        if visao_definiva == "📋 Tabela Clássica":
+            st.dataframe(df_export, use_container_width=True)
+        elif visao_definiva == "🗂️ Cartões de Status (Metrics)":
+            veiculos_unicos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
+            cols = st.columns(3)
+            for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
+                col_atual = cols[idx % 3]
+                with col_atual:
+                    if car['situacao'] == "Saindo da Garagem":
+                        status_msg, sub_val = "🟢 EM TRÂNSITO (RUA)", car['Tempo em Trânsito'] if car['Tempo em Trânsito'] != "-" else "Em rota"
                     else:
-                        icon, cor, acao = "🔵", "#cce5ff", "RETORNO DE VIAGEM"
-                        tempo_msg = f"⏱️ Tempo total gasto no trajeto externo: **{linha['Tempo em Trânsito']}**" if linha['Tempo em Trânsito'] != "-" else ""
-                        
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #333;">
-                            <h4 style="margin: 0;">{icon} {acao} — {data_f} às {linha['hora']}</h4>
-                            <p style="margin: 5px 0 0 0;"><b>Veículo:</b> {linha['veiculo']} | <b>Motorista:</b> {linha['motorista']} | <b>Local:</b> {linha['destino']}</p>
-                            <p style="margin: 2px 0 0 0; font-size: 13px; color: #555;">{tempo_msg} | Operador: {linha['porteiro']}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                        status_msg, sub_val = "🔵 NA GARAGEM (PÁTIO)", car['Tempo no Pátio'] if car['Tempo no Pátio'] != "-" else "Estacionado"
+                    with st.container(border=True):
+                        st.markdown(f"### {car['veiculo']}")
+                        st.markdown(f"👤 **Motorista:** {car['motorista']}  \n🏢 **Local:** {car['destino']}")
+                        st.metric(label=status_msg, value=f"Duração: {sub_val}")
+        elif visao_definiva == "🕒 Linha do Tempo (Feed)":
+            for _, linha in df_export.head(15).iterrows():
+                data_f = datetime.strptime(linha['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                icon, cor = ("🟢", "#d4edda") if linha['situacao'] == "Saindo da Garagem" else ("🔵", "#cce5ff")
+                st.markdown(f'<div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #333;"><h4 style="margin:0;">{icon} {linha["situacao"].upper()} — {data_f} às {linha["hora"]}</h4><p style="margin:5px 0 0 0;"><b>Veículo:</b> {linha["veiculo"]} | <b>Motorista:</b> {linha["motorista"]} | <b>Local:</b> {linha["destino"]}</p><p style="margin:2px 0 0 0; font-size:13px; color:#555;">Operador: {linha["porteiro"]}</p></div>', unsafe_allow_html=True)
+        elif visao_definiva == "📊 Gráfico de Ocupação":
+            df_validos = df_base[df_base['minutos_duracao'] > 0].head(15)
+            if not df_validos.empty:
+                chart_data = df_validos.pivot_table(index='veiculo', columns='situacao', values='minutos_duracao', aggfunc='sum').fillna(0)
+                st.bar_chart(chart_data)
+        
+        st.write("---")
+        buffer_excel = io.BytesIO()
+        with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
+            df_export.to_excel(writer, index=False, sheet_name='Controle Portaria')
+        st.download_button(label="📥 Baixar Histórico Completo em Excel (.xlsx)", data=buffer_excel.getvalue(), file_name=f"relatorio_portaria_{agora_brasilia.strftime('%d_%m_%Y')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.info("Nenhum registro para exibir.")
 
-            elif visao_definiva == "📊 Gráfico de Ocupação":
-                st.markdown("### Gráfico de Minutos por Evento")
-                df_validos = df[df['minutos_duracao'] > 0].head(15)
-                if not df_validos.empty:
-                    chart_data = df_validos.pivot_table(index='veiculo', columns='situacao', values='minutos_duracao', aggfunc='sum').fillna(0)
-                    st.bar_chart(chart_data)
-                else:
-                    st.info("Dados insuficientes no banco para traçar médias gráficas de minutos.")
-
-            # ================= AREA DE EXPORTAÇÃO EXCEL (DENTRO DA ABA) =================
-            st.write("---")
-            st.markdown("### 📥 Relatório de Auditoria para Download")
-            
-            # Converte a tabela de dados calculados para uma planilha Excel em memória
-            buffer_excel = io.BytesIO()
-            with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-                df_export.to_excel(writer, index=False, sheet_name='Controle Portaria')
-            
-            # Cria o botão oficial de download do Streamlit
-            st.download_button(
-                label="📥 Baixar Histórico Completo em Excel (.xlsx)",
-                data=buffer_excel.getvalue(),
-                file_name=f"relatorio_portaria_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
+# ================= ABA 3: PASSAGEM DE PLANTÃO INTEGRADA =================
+with aba_plantao:
+    st.subheader("🔄 Fechamento e Passagem de Turno (Últimas 12 Horas)")
+    st.write("Confira e audite as ocorrências do seu turno de 12 horas antes de salvar a passagem definitiva.")
+    
+    if not df_base.empty:
+        # Filtra movimentações correspondentes estritamente ao turno de 12 horas
+        limite_12h = agora_brasilia - timedelta(hours=12)
+        df_12h = df_base[df_base['datetime_completo'] >= limite_12h]
+        
+        total_mov = len(df_12h)
+        saidas_turno = len(df_12h[df_12h['situacao'] == "Saindo da Garagem"])
+        retornos_turno = len(df_12h[df_12h['situacao'] == "Retornando à Garagem"])
+        
+        # Grid Estatístico de Auditoria Automática
+        c1, c2, c3 = st.columns(3)
+        c1.metric("📊 Total de Movimentações (Últimas 12h)", total_mov)
+        c2.metric("🟢 Saídas Registradas no Turno", saidas_turno)
+        c3.metric("🔵 Retornos Registrados no Turno", retornos_turno)
+        
+        st.write("---")
+        
+        # Mapeamento em Tempo Real de Veículos Pendentes na Rua
+        st.markdown("### 🚨 Veículos que se encontram na RUA atualmente:")
+        veiculos_ultimos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
+        carros_na_rua = veiculos_ultimos[veiculos_ultimos['situacao'] == "Saindo da Garagem"]
+        
+        if carros_na_rua.empty:
+            st.success("✅ Tudo limpo! Nenhum veículo pendente na rua neste momento.")
         else:
-            st.info("Nenhum registro na tabela de controle ainda.")
-    except Exception as e:
-        st.error(f"Erro ao processar as visualizações do histórico: {e}")
+            for _, pendencia in carros_na_rua.iterrows():
+                st.warning(f"⚠️ **{pendencia['veiculo']}** — Com o motorista **{pendencia['motorista']}** (Destino: {pendencia['destino']} | Registro efetuado às {pendencia['hora']}).")
+        
+        st.write("---")
+        
+        # Form de Fechamento Definitivo com Integração Direta no Supabase
+        st.markdown("### ✍️ Livro de Ocorrências e Assinatura Digital do Turno")
+        with st.form(key="form_passagem_plantao"):
+            obs_texto = st.text_area(
+                "Insira avisos, problemas de infraestrutura ou recados para o próximo turno:", 
+                placeholder="Ex: Deixei a chave do carro X no quadro B. Portão 1 apresentou estalos ao fechar às 21:00..."
+            )
+            botao_assinar = st.form_submit_button("🔒 Assinar e Gravar Fechamento de Plantão")
+            
+            if botao_assinar:
+                # Transforma o DataFrame de carros na rua em uma String única separada por vírgula
+                if not carros_na_rua.empty:
+                    lista_pendentes = ", ".join(carros_na_rua['veiculo'].tolist())
+                else:
+                    lista_pendentes = "Nenhum veículo pendente"
+
+                # Cria o objeto estruturado exatamente com os nomes de colunas criados no seu banco
+                dados_plantao = {
+                    "data_fechamento": str(data_atual),
+                    "hora_fechamento": hora_atual,
+                    "porteiro_saindo": st.session_state.usuario_logado,
+                    "total_movimentacoes": int(total_mov),
+                    "veiculos_pendentes": lista_pendentes,
+                    "observacoes": obs_texto
+                }
+                
+                try:
+                    # Executa a query de gravação direta na nova tabela
+                    supabase.table("passagem_plantao").insert(dados_plantao).execute()
+                    
+                    st.success(f"🎉 Plantão de **{st.session_state.usuario_logado}** fechado e gravado com sucesso no Supabase!")
+                    st.info("Deslogue do sistema clicando no botão '🚪 Encerrar Turno' lá em cima para dar lugar ao próximo operador.")
+                except Exception as e:
+                    st.error(f"❌ Erro crítico ao salvar o fechamento na tabela 'passagem_plantao': {e}")
+    else:
+        st.info("Ainda não existem dados no histórico para rodar o cálculo de auditoria de 12 horas.")
