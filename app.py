@@ -4,11 +4,12 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
 import io
+import hashlib
 
 # 1. Configuração da Página
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
 
-# 2. Conexão Secura com o Supabase
+# 2. Conexão Segura com o Supabase
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
@@ -18,7 +19,12 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
-# 3. Inicialização do Estado da Sessão (Controle de Login e Redirecionamento)
+# --- CAMADA DE SEGURANÇA E CRIPTOGRAFIA (LGPD) ---
+def gerar_hash_senha(senha: str) -> str:
+    """Transforma a senha em um Hash SHA-256 irreversível."""
+    return hashlib.sha256(senha.strip().encode('utf-8')).hexdigest()
+
+# 3. Inicialização do Estado da Sessão
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 if "usuario_logado" not in st.session_state:
@@ -28,45 +34,55 @@ if "fase_troca_senha" not in st.session_state:
 if "usuario_pendente_senha" not in st.session_state:
     st.session_state.usuario_pendente_senha = None
 
-# 4. Função para Validar o Login e Checar Primeiro Acesso
+# 4. Função Avançada de Validação de Login (Híbrida: Texto Limpo vs Hash)
 def realizar_login(usuario, senha):
     try:
         usuario_limpo = usuario.strip()
         senha_limpa = senha.strip()
         
-        # Buscamos o nome e também a flag de primeiro acesso
+        # 1º Passo: Buscar os dados do porteiro pelo nome
         resposta = supabase.table("cadastro_porteiros")\
-            .select("nome_porteiro, primeiro_acesso")\
+            .select("nome_porteiro, senha, primeiro_acesso")\
             .eq("nome_porteiro", usuario_limpo)\
-            .eq("senha", senha_limpa)\
             .execute()
         
         if resposta.data:
             registro = resposta.data[0]
+            senha_banco = registro.get("senha")
+            eh_primeiro_acesso = registro.get("primeiro_acesso")
             
-            # Se for o primeiro acesso, intercepta o login e força a troca
-            if registro.get("primeiro_acesso") is True:
-                st.session_state.fase_troca_senha = True
-                st.session_state.usuario_pendente_senha = registro["nome_porteiro"]
-                st.rerun()
+            # Caso A: É o primeiro acesso do usuário (A pré-senha no banco está em texto limpo)
+            if eh_primeiro_acesso is True:
+                if senha_limpa == senha_banco: # Comparação direta em texto limpo
+                    st.session_state.fase_troca_senha = True
+                    st.session_state.usuario_pendente_senha = registro["nome_porteiro"]
+                    st.rerun()
+                else:
+                    st.error("❌ Senha incorreta para o primeiro acesso.")
+            
+            # Caso B: Usuário já cadastrou sua senha definitiva (A senha no banco é um Hash SHA-256)
             else:
-                # Login normal autorizado
-                st.session_state.autenticado = True
-                st.session_state.usuario_logado = registro["nome_porteiro"]
-                st.success(f"🔓 Bem-vindo, {st.session_state.usuario_logado}!")
-                st.rerun()
+                senha_digitada_hash = gerar_hash_senha(senha_limpa)
+                if senha_digitada_hash == senha_banco: # Comparação segura de Hashes
+                    st.session_state.autenticado = True
+                    st.session_state.usuario_logado = registro["nome_porteiro"]
+                    st.success(f"🔓 Bem-vindo, {st.session_state.usuario_logado}!")
+                    st.rerun()
+                else:
+                    st.error("❌ Usuário ou senha incorretos.")
         else:
-            st.error("❌ Usuário ou senha incorretos. Verifique os dados informados.")
+            st.error("❌ Usuário não cadastrado no sistema.")
+            
     except Exception as e:
         st.error(f"Erro ao conectar com a tabela de autenticação: {e}")
 
 # 5. TELA DE LOGIN OBRIGATÓRIA / TROCA DE SENHA
 if not st.session_state.autenticado:
     
-    # Sub-tela: Forçar a Troca de Senha Obrigatória
+    # Sub-tela: Forçar a Troca de Senha Obrigatória (Gera o Hash aqui)
     if st.session_state.fase_troca_senha:
-        st.markdown("<h2 style='text-align: center;'>🔒 Atualização de Segurança Obrigatória</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Por segurança, crie uma senha pessoal.</p>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center;'>🔒 Atualização de Segurança Obrigatória (LGPD)</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Por segurança, defina uma senha pessoal irreversível.</p>", unsafe_allow_html=True)
         
         _, col_central, _ = st.columns([1, 1.8, 1])
         with col_central:
@@ -74,7 +90,7 @@ if not st.session_state.autenticado:
                 st.info(f"Usuário: **{st.session_state.usuario_pendente_senha}**")
                 nova_senha = st.text_input("Digite sua nova senha pessoal:", type="password")
                 confirma_senha = st.text_input("Confirme a nova senha:", type="password")
-                botao_mudar = st.form_submit_button("💾 Salvar Nova Senha e Entrar")
+                botao_mudar = st.form_submit_button("💾 Salvar Nova Senha em Hash e Entrar")
                 
                 if botao_mudar:
                     if not nova_senha or not confirma_senha:
@@ -85,21 +101,23 @@ if not st.session_state.autenticado:
                         st.warning("Por segurança, escolha uma senha com pelo menos 4 caracteres.")
                     else:
                         try:
-                            # Atualiza a senha no banco e desmarca a flag de primeiro acesso
+                            # TRANSFORMAÇÃO EM HASH ANTES DE SALVAR NO BANCO
+                            nova_senha_hash = gerar_hash_senha(nova_senha)
+                            
+                            # Atualiza a senha no banco com o Hash e desmarca o primeiro acesso
                             supabase.table("cadastro_porteiros")\
-                                .update({"senha": nova_senha.strip(), "primeiro_acesso": False})\
+                                .update({"senha": nova_senha_hash, "primeiro_acesso": False})\
                                 .eq("nome_porteiro", st.session_state.usuario_pendente_senha)\
                                 .execute()
                             
-                            # Autentica automaticamente após o sucesso
+                            # Autentica automaticamente
                             st.session_state.autenticado = True
                             st.session_state.usuario_logado = st.session_state.usuario_pendente_senha
                             
-                            # Limpa os estados temporários de troca de senha
                             st.session_state.fase_troca_senha = False
                             st.session_state.usuario_pendente_senha = None
                             
-                            st.success("🎉 Senha alterada com sucesso! Bem-vindo ao sistema.")
+                            st.success("🎉 Senha criptografada e salva com sucesso! Bem-vindo.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao salvar nova senha no banco: {e}")
@@ -110,7 +128,7 @@ if not st.session_state.autenticado:
                 st.rerun()
         st.stop()
 
-    # Tela de Login Padrão (Caso não esteja em fase de troca de senha)
+    # Tela de Login Padrão
     else:
         st.markdown("<h2 style='text-align: center;'>🛃 Acesso Restrito - Portaria</h2>", unsafe_allow_html=True)
         
@@ -232,7 +250,7 @@ if dados_carregados:
     for i in range(len(df_base)):
         linha_atual = df_base.iloc[i]
         veiculo_atual = linha_atual['veiculo']
-        sit_atual = linha_atual['situacao']
+        sit_atual = presidential_sit = linha_atual['situacao']
         time_atual = linha_atual['datetime_completo']
         
         df_anterior = df_base[(df_base['veiculo'] == veiculo_atual) & (df_base['datetime_completo'] < time_atual)]
