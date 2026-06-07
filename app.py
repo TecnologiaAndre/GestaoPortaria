@@ -6,25 +6,33 @@ import pandas as pd
 import io
 import hashlib
 
-# 1. Configuração da Página
+# ==============================================================================
+# 1. CONFIGURAÇÃO E INFRAESTRUTURA
+# ==============================================================================
+
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
 
-# 2. Conexão Segura com o Supabase
+# Inicialização segura do Supabase usando Secrets do Streamlit para evitar hardcoding.
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 @st.cache_resource
 def init_supabase() -> Client:
+    """Garante uma única instância de conexão com o banco (Singleton/Resource)."""
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase = init_supabase()
 
-# --- CAMADA DE SEGURANÇA E CRIPTOGRAFIA (LGPD) ---
+
+# ==============================================================================
+# 2. SEGURANÇA, SESSÃO E AUTENTICAÇÃO
+# ==============================================================================
+
 def gerar_hash_senha(senha: str) -> str:
-    """Transforma a senha em um Hash SHA-256 irreversível."""
+    """Criptografia padrão para senhas definitivas (atendimento à LGPD)."""
     return hashlib.sha256(senha.strip().encode('utf-8')).hexdigest()
 
-# 3. Inicialização do Estado da Sessão
+# Inicialização do Session State para persistência de estado entre interações do Streamlit.
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 if "usuario_logado" not in st.session_state:
@@ -34,13 +42,17 @@ if "fase_troca_senha" not in st.session_state:
 if "usuario_pendente_senha" not in st.session_state:
     st.session_state.usuario_pendente_senha = None
 
-# 4. Função Avançada de Validação de Login (Híbrida: Texto Limpo vs Hash)
+
 def realizar_login(usuario, senha):
+    """
+    Fluxo de Autenticação Híbrido:
+    - Se for o primeiro acesso, valida o texto limpo gerado pelo painel admin.
+    - Se for acesso recorrente, criptografa a entrada e compara com o Hash SHA-256 do banco.
+    """
     try:
         usuario_limpo = usuario.strip()
         senha_limpa = senha.strip()
         
-        # 1º Passo: Buscar os dados do porteiro pelo nome
         resposta = supabase.table("cadastro_porteiros")\
             .select("nome_porteiro, senha, primeiro_acesso")\
             .eq("nome_porteiro", usuario_limpo)\
@@ -51,19 +63,19 @@ def realizar_login(usuario, senha):
             senha_banco = registro.get("senha")
             eh_primeiro_acesso = registro.get("primeiro_acesso")
             
-            # Caso A: É o primeiro acesso do usuário (A pré-senha no banco está em texto limpo)
             if eh_primeiro_acesso is True:
-                if senha_limpa == senha_banco: # Comparação direta em texto limpo
+                # Regra de Negócio: Senhas provisórias de novos porteiros ficam em texto limpo criadas via Admin
+                if senha_limpa == senha_banco:
                     st.session_state.fase_troca_senha = True
                     st.session_state.usuario_pendente_senha = registro["nome_porteiro"]
                     st.rerun()
                 else:
                     st.error("❌ Senha incorreta para o primeiro acesso.")
             
-            # Caso B: Usuário já cadastrou sua senha definitiva (A senha no banco é um Hash SHA-256)
             else:
+                # Senhas normais já passaram pelo fluxo de transição e estão em Hash
                 senha_digitada_hash = gerar_hash_senha(senha_limpa)
-                if senha_digitada_hash == senha_banco: # Comparação segura de Hashes
+                if senha_digitada_hash == senha_banco:
                     st.session_state.autenticado = True
                     st.session_state.usuario_logado = registro["nome_porteiro"]
                     st.success(f"🔓 Bem-vindo, {st.session_state.usuario_logado}!")
@@ -76,10 +88,11 @@ def realizar_login(usuario, senha):
     except Exception as e:
         st.error(f"Erro ao conectar com a tabela de autenticação: {e}")
 
-# 5. TELA DE LOGIN OBRIGATÓRIA / TROCA DE SENHA
+
+# Guardrail de Fluxo: Impede a renderização do app caso o usuário não esteja logado
 if not st.session_state.autenticado:
     
-    # Sub-tela: Forçar a Troca de Senha Obrigatória (Gera o Hash aqui)
+    # Sub-tela 1: Forçar Atualização de Credenciais no Primeiro Acesso
     if st.session_state.fase_troca_senha:
         st.markdown("<h2 style='text-align: center;'>🔒 Atualização de Segurança Obrigatória (LGPD)</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Por segurança, defina uma senha pessoal irreversível.</p>", unsafe_allow_html=True)
@@ -101,19 +114,16 @@ if not st.session_state.autenticado:
                         st.warning("Por segurança, escolha uma senha com pelo menos 4 caracteres.")
                     else:
                         try:
-                            # TRANSFORMAÇÃO EM HASH ANTES DE SALVAR NO BANCO
+                            # A senha trafega via SSL e é convertida localmente antes do INSERT no Supabase
                             nova_senha_hash = gerar_hash_senha(nova_senha)
                             
-                            # Atualiza a senha no banco com o Hash e desmarca o primeiro acesso
                             supabase.table("cadastro_porteiros")\
                                 .update({"senha": nova_senha_hash, "primeiro_acesso": False})\
                                 .eq("nome_porteiro", st.session_state.usuario_pendente_senha)\
                                 .execute()
                             
-                            # Autentica automaticamente
                             st.session_state.autenticado = True
                             st.session_state.usuario_logado = st.session_state.usuario_pendente_senha
-                            
                             st.session_state.fase_troca_senha = False
                             st.session_state.usuario_pendente_senha = None
                             
@@ -128,7 +138,7 @@ if not st.session_state.autenticado:
                 st.rerun()
         st.stop()
 
-    # Tela de Login Padrão
+    # Sub-tela 2: Interface de Autenticação Padrão
     else:
         st.markdown("<h2 style='text-align: center;'>🛃 Acesso Restrito - Portaria</h2>", unsafe_allow_html=True)
         
@@ -146,16 +156,21 @@ if not st.session_state.autenticado:
                         st.warning("Por favor, preencha os campos de Usuário e Senha.")
         st.stop()
 
-# --- 🔓 ÁREA SEGURA (SÓ ACESSÍVEL SE ESTIVER AUTENTICADO) ---
+
+# ==============================================================================
+# 3. ÁREA LOGADA / PROCESSAMENTO DE DADOS (DASHBOARD)
+# ==============================================================================
 
 fuso_brasilia = ZoneInfo("America/Sao_Paulo")
 agora_brasilia = datetime.now(fuso_brasilia)
 data_atual = agora_brasilia.date()
 hora_atual = agora_brasilia.time().strftime("%H:%M:%S")
 
-# 6. Busca de Dados das Tabelas de Cadastro
+
+# Caching de tabelas auxiliares para otimizar custos e performance de requisições ao Supabase.
 @st.cache_data(ttl=60)
 def carregar_dados_cadastro():
+    """Busca listas de apoio para alimentar os seletores da portaria. TTL de 60s."""
     try:
         motoristas_data = supabase.table("cadastro_motoristas").select("nome_motorista, matricula").order("nome_motorista").execute().data
         veiculos_data = supabase.table("cadastro_veiculos").select("veiculo, placa").order("veiculo").execute().data
@@ -172,11 +187,13 @@ def carregar_dados_cadastro():
 
 motoristas, veiculos, locais = carregar_dados_cadastro()
 
+# Fallbacks defensivos para evitar que a UI quebre caso as tabelas estejam vazias.
 if not motoristas: motoristas = ["Nenhum motorista encontrado"]
 if not veiculos: veiculos = ["Nenhum veículo encontrado"]
 if not locais: locais = ["Nenhum local encontrado"]
 
-# --- INTERFACE PRINCIPAL ---
+
+# --- COMPONENTE DE TOPO: IDENTIFICAÇÃO E LOGOUT ---
 col_titulo, col_user = st.columns([4, 1.2])
 with col_titulo:
     st.title("🛃 Sistema Integrado de Portaria")
@@ -189,13 +206,13 @@ with col_user:
 
 st.write("---")
 
-# Abas do Sistema
 aba_registro, aba_historico, aba_plantao = st.tabs(["📝 Registrar Movimentação", "📊 Histórico de Registros", "🔄 Passagem de Plantão"])
+
 
 # ================= ABA 1: REGISTRO DE MOVIMENTAÇÃO =================
 with aba_registro:
     if st.button("🔄 Atualizar Listas"):
-        st.cache_data.clear()
+        st.cache_data.clear() # Limpa o cache para forçar nova requisição ao Supabase
         st.rerun()
 
     with st.form(key="form_portaria", clear_on_submit=True):
@@ -230,7 +247,14 @@ with aba_registro:
         except Exception as e:
             st.error(f"❌ Erro ao salvar movimentação: {e}")
 
-# Processamento de Engenharia de Tempos (Comum para as Abas 2 e 3)
+
+# ==============================================================================
+# LOGICA CENTRAL: ENGENHARIA DE TEMPOS E ESTADOS DOS VEÍCULOS
+# ==============================================================================
+# Contexto Técnico: Como o banco salva eventos isolados (linhas de logs), nós reconstruímos a linha do tempo
+# de forma programática. O algoritmo ordena os registros por tempo ascendente e varre comparando o estado atual 
+# com o estado anterior daquele mesmo veículo para calcular o tempo decorrido na rua ou no pátio.
+
 try:
     resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(60).execute()
     dados_carregados = resposta.data if resposta.data else []
@@ -243,16 +267,19 @@ if dados_carregados:
     df_base['datetime_completo'] = pd.to_datetime(df_base['data'] + ' ' + df_base['hora'])
     df_base = df_base.sort_values('datetime_completo', ascending=True)
     
+    # Inicialização das colunas de cálculo de métricas operacionais
     df_base['minutos_duracao'] = 0
     df_base['Tempo no Pátio'] = "-"
     df_base['Tempo em Trânsito'] = "-"
     
+    # Algorítmo de reconstrução de estado e delta de tempo
     for i in range(len(df_base)):
         linha_atual = df_base.iloc[i]
         veiculo_atual = linha_atual['veiculo']
-        sit_atual = presidential_sit = linha_atual['situacao']
+        sit_atual = linha_atual['situacao'] # Correção do bug 'presidential_sit' feita aqui
         time_atual = linha_atual['datetime_completo']
         
+        # Localiza o histórico cronológico exclusivo deste veículo específico
         df_anterior = df_base[(df_base['veiculo'] == veiculo_atual) & (df_base['datetime_completo'] < time_atual)]
         if not df_anterior.empty:
             ultima_linha = df_anterior.iloc[-1]
@@ -265,11 +292,13 @@ if dados_carregados:
             minutos = (total_segundos % 3600) // 60
             tempo_formatado = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
             
+            # Validação do par de eventos lógicos para atribuição correta das colunas
             if sit_atual == "Retornando à Garagem" and sit_anterior == "Saindo da Garagem":
                 df_base.at[df_base.index[i], 'Tempo em Trânsito'] = tempo_formatado
             elif sit_atual == "Saindo da Garagem" and sit_anterior == "Retornando à Garagem":
                 df_base.at[df_base.index[i], 'Tempo no Pátio'] = tempo_formatado
 
+    # Organização de Visualização: Reverte para ordem descendente para exibição em tela de logs recentes
     df_base = df_base.sort_values('id', ascending=False)
     df_export = df_base.drop(columns=['datetime_completo', 'minutos_duracao'])
     colunas_ordenadas = ['id', 'data', 'hora', 'veiculo', 'motorista', 'destino', 'situacao', 'Tempo no Pátio', 'Tempo em Trânsito', 'porteiro']
@@ -277,6 +306,7 @@ if dados_carregados:
 else:
     df_base = pd.DataFrame()
     df_export = pd.DataFrame()
+
 
 # ================= ABA 2: HISTÓRICO PERSONALIZÁVEL =================
 with aba_historico:
@@ -292,7 +322,9 @@ with aba_historico:
         
         if visao_definiva == "📋 Tabela Clássica":
             st.dataframe(df_export, use_container_width=True)
+            
         elif visao_definiva == "🗂️ Cartões de Status (Metrics)":
+            # Filtro para isolar apenas o último status conhecido de cada veículo (Visão de Pátio em Tempo Real)
             veiculos_unicos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
             cols = st.columns(3)
             for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
@@ -306,11 +338,13 @@ with aba_historico:
                         st.markdown(f"### {car['veiculo']}")
                         st.markdown(f"👤 **Motorista:** {car['motorista']}  \n🏢 **Local:** {car['destino']}")
                         st.metric(label=status_msg, value=f"Duração: {sub_val}")
+                        
         elif visao_definiva == "🕒 Linha do Tempo (Feed)":
             for _, linha in df_export.head(15).iterrows():
                 data_f = datetime.strptime(linha['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
                 icon, cor = ("🟢", "#d4edda") if linha['situacao'] == "Saindo da Garagem" else ("🔵", "#cce5ff")
                 st.markdown(f'<div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #333;"><h4 style="margin:0;">{icon} {linha["situacao"].upper()} — {data_f} às {linha["hora"]}</h4><p style="margin:5px 0 0 0;"><b>Veículo:</b> {linha["veiculo"]} | <b>Motorista:</b> {linha["motorista"]} | <b>Local:</b> {linha["destino"]}</p><p style="margin:2px 0 0 0; font-size:13px; color:#555;">Operador: {linha["porteiro"]}</p></div>', unsafe_allow_html=True)
+                
         elif visao_definiva == "📊 Gráfico de Ocupação":
             df_validos = df_base[df_base['minutos_duracao'] > 0].head(15)
             if not df_validos.empty:
@@ -318,6 +352,8 @@ with aba_historico:
                 st.bar_chart(chart_data)
         
         st.write("---")
+        
+        # Renderização do arquivo em memória para download via Streamlit sem salvar em disco local.
         buffer_excel = io.BytesIO()
         with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
             df_export.to_excel(writer, index=False, sheet_name='Controle Portaria')
@@ -325,12 +361,14 @@ with aba_historico:
     else:
         st.info("Nenhum registro para exibir.")
 
+
 # ================= ABA 3: PASSAGEM DE PLANTÃO INTEGRADA =================
 with aba_plantao:
     st.subheader("🔄 Fechamento e Passagem de Turno (Últimas 12 Horas)")
     st.write("Confira e audite as ocorrências do seu turno de 12 horas antes de salvar a passagem definitiva.")
     
     if not df_base.empty:
+        # Filtro de auditoria retroativa com base no fuso-horário local configurado no topo.
         limite_12h = (agora_brasilia - timedelta(hours=12)).replace(tzinfo=None)
         df_12h = df_base[df_base['datetime_completo'] >= limite_12h]
         
@@ -346,6 +384,7 @@ with aba_plantao:
         st.write("---")
         
         st.markdown("### 🚨 Veículos que se encontram na RUA atualmente:")
+        # Identifica veículos órfãos de retorno para alertar o operador que está assumindo o turno.
         veiculos_ultimos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
         carros_na_rua = veiculos_ultimos[veiculos_ultimos['situacao'] == "Saindo da Garagem"]
         
