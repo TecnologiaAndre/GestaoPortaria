@@ -22,14 +22,18 @@ if "autenticado" not in st.session_state:
 if "usuario_logado" not in st.session_state:
     st.session_state.usuario_logado = None
 
-# 4. Função para Validar o Login usando Nome e a coluna Senha
+# 4. Função para Validar o Login usando Nome e a coluna Senha (Versão Blindada)
 def realizar_login(usuario, senha):
     try:
+        # Limpa espaços em branco acidentais no início ou fim do texto
+        usuario_limpo = usuario.strip()
+        senha_limpa = senha.strip()
+        
         # Busca no banco filtrando por nome E por senha idêntica
         resposta = supabase.table("cadastro_porteiros")\
             .select("nome_porteiro")\
-            .eq("nome_porteiro", usuario)\
-            .eq("senha", senha)\
+            .eq("nome_porteiro", usuario_limpo)\
+            .eq("senha", senha_limpa)\
             .execute()
         
         # Se retornar dados, significa que a combinação usuário + senha está correta
@@ -71,7 +75,7 @@ if not st.session_state.autenticado:
 def carregar_dados_cadastro():
     try:
         motoristas_data = supabase.table("cadastro_motoristas").select("nome_motorista, matricula").order("nome_motorista").execute().data
-        veiculos_data = supabase.table("cadastro_veiculos").select("veiculo, placa").order("veiculo").execute().data
+        veiculos_data = supabase.table("cadastro_veiculos").select("veiculo, block").order("veiculo").execute().data
         locais_data = supabase.table("cadastro_locais").select("nome_local").order("nome_local").execute().data
         
         lista_motoristas = [f"{m['nome_motorista']} ({m['matricula']})" for m in motoristas_data if m.get("nome_motorista")]
