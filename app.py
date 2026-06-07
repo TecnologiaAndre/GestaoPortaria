@@ -1,8 +1,9 @@
 import streamlit as st
 from supabase import create_client, Client
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import pandas as pd
+import io
 
 # 1. Configuração da Página
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
@@ -148,24 +149,27 @@ with aba_registro:
             st.error(f"❌ Erro ao salvar movimentação: {e}")
 
 with aba_historico:
-    st.subheader("Laboratório de Testes Visuais")
+    st.subheader("Painel de Monitoramento e Histórico")
     
+    # 1. BARRA DE PREFERÊNCIAS DO OPERADOR
     col_refresh, col_selector = st.columns([1, 4])
     with col_refresh:
-        if st.button("🔄 Atualizar Dados"):
+        if st.button("🔄 Atualizar Dados", key="btn_refresh_hist"):
             st.rerun()
             
     with col_selector:
-        visao_selecionada = st.radio(
-            "Escolha o modelo de visualização para testar:",
-            options=["1. Cartões de Status (Metrics)", "2. Linha do Tempo (Feed)", "3. Gráfico de Ocupação"],
-            horizontal=True
+        visao_definiva = st.radio(
+            "Selecione o seu estilo preferido de exibição:",
+            options=["📋 Tabela Clássica", "🗂️ Cartões de Status (Metrics)", "🕒 Linha do Tempo (Feed)", "📊 Gráfico de Ocupação"],
+            horizontal=True,
+            key="usuario_preferencia_visual"
         )
         
     st.write("---")
         
     try:
-        resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(40).execute()
+        # Puxa os dados brutos e realiza a engenharia de tempo em background
+        resposta = supabase.table("controle_de_portaria").select("*").order("id", desc=True).limit(50).execute()
         
         if resposta.data:
             df = pd.DataFrame(resposta.data)
@@ -173,93 +177,113 @@ with aba_historico:
             df = df.sort_values('datetime_completo', ascending=True)
             
             df['minutos_duracao'] = 0
-            df['tempo_formatado'] = "-"
+            df['Tempo no Pátio'] = "-"
+            df['Tempo em Trânsito'] = "-"
             
             for i in range(len(df)):
                 linha_atual = df.iloc[i]
                 veiculo_atual = linha_atual['veiculo']
+                sit_atual = linha_atual['situacao']
                 time_atual = linha_atual['datetime_completo']
                 
                 df_anterior = df[(df['veiculo'] == veiculo_atual) & (df['datetime_completo'] < time_atual)]
                 if not df_anterior.empty:
                     ultima_linha = df_anterior.iloc[-1]
+                    sit_anterior = ultima_linha['situacao']
                     diferenca = time_atual - ultima_linha['datetime_completo']
                     total_segundos = int(diferenca.total_seconds())
-                    df.at[df.index[i], 'minutos_duracao'] = total_segundos // 60
                     
+                    df.at[df.index[i], 'minutos_duracao'] = total_segundos // 60
                     horas = total_segundos // 3600
                     minutos = (total_segundos % 3600) // 60
-                    df.at[df.index[i], 'tempo_formatado'] = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
+                    tempo_formatado = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
+                    
+                    if sit_atual == "Retornando à Garagem" and sit_anterior == "Saindo da Garagem":
+                        df.at[df.index[i], 'Tempo em Trânsito'] = tempo_formatado
+                    elif sit_atual == "Saindo da Garagem" and sit_anterior == "Retornando à Garagem":
+                        df.at[df.index[i], 'Tempo no Pátio'] = tempo_formatado
 
+            # Ordena de volta para mostrar o mais novo primeiro
             df = df.sort_values('id', ascending=False)
+            
+            # Prepara a estrutura limpa de visualização / exportação
+            df_export = df.drop(columns=['datetime_completo', 'minutos_duracao'])
+            colunas_ordenadas = ['id', 'data', 'hora', 'veiculo', 'motorista', 'destino', 'situacao', 'Tempo no Pátio', 'Tempo em Trânsito', 'porteiro']
+            df_export = df_export.reindex(columns=colunas_ordenadas)
 
-            # ================= OPÇÃO 1: CARTÕES DE STATUS =================
-            if visao_selecionada == "1. Cartões de Status (Metrics)":
-                st.markdown("### 📋 Status Atual da Frota (Última Posição de Cada Veículo)")
+            # ================= RENDERIZAÇÃO CONFORME ESCOLHA DO USUÁRIO =================
+            
+            if visao_definiva == "📋 Tabela Clássica":
+                st.dataframe(df_export, use_container_width=True)
+
+            elif visao_definiva == "🗂️ Cartões de Status (Metrics)":
+                st.markdown("### Posição Atual dos Veículos")
                 veiculos_unicos = df.drop_duplicates(subset=['veiculo'], keep='first')
-                
                 cols = st.columns(3)
                 for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
                     col_atual = cols[idx % 3]
                     with col_atual:
                         if car['situacao'] == "Saindo da Garagem":
-                            status_msg = "🟢 EM TRÂNSITO (RUA)"
-                            sub_msg = f"Fora há: {car['tempo_formatado']}" if car['tempo_formatado'] != "-" else "Acabou de sair"
+                            status_msg, cor_badge = "🟢 EM TRÂNSITO (RUA)", "Fora há: "
+                            sub_val = car['Tempo em Trânsito'] if car['Tempo em Trânsito'] != "-" else "Em rota"
                         else:
-                            status_msg = "🔵 NA GARAGEM (PÁTIO)"
-                            sub_msg = f"Estacionado há: {car['tempo_formatado']}" if car['tempo_formatado'] != "-" else "Acabou de entrar"
+                            status_msg, cor_badge = "🔵 NA GARAGEM (PÁTIO)", "Parado há: "
+                            sub_val = car['Tempo no Pátio'] if car['Tempo no Pátio'] != "-" else "Estacionado"
                             
                         with st.container(border=True):
                             st.markdown(f"### {car['veiculo']}")
-                            st.markdown(f"**Motorista:** {car['motorista']}")
-                            st.markdown(f"**Último Local:** {car['destino']}")
-                            st.metric(label=status_msg, value=sub_msg)
+                            st.markdown(f"👤 **Motorista:** {car['motorista']}  \n🏢 **Local:** {car['destino']}")
+                            st.metric(label=status_msg, value=f"{cor_badge}{sub_val}")
 
-            # ================= OPÇÃO 2: LINHA DO TEMPO (FEED) =================
-            elif visao_selecionada == "2. Linha do Tempo (Feed)":
-                st.markdown("### 🕒 Feed de Movimentações Recentes (Estilo Linha do Tempo)")
-                
-                for _, linha in df.head(15).iterrows():
+            elif visao_definiva == "🕒 Linha do Tempo (Feed)":
+                st.markdown("### Feed de Ocorrências Recentes")
+                for _, linha in df_export.head(15).iterrows():
                     data_f = datetime.strptime(linha['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
-                    
                     if linha['situacao'] == "Saindo da Garagem":
-                        icon, cor, acao = "🟢", "#d4edda", "SAÍDA REGISTRADA"
-                        tempo_msg = f"⏱️ Fica no pátio antes de sair: **{linha['tempo_formatado']}**" if linha['tempo_formatado'] != "-" else ""
+                        icon, cor, acao = "🟢", "#d4edda", "SAÍDA DE VEÍCULO"
+                        tempo_msg = f"⏱️ Tempo de permanência prévia no pátio: **{linha['Tempo no Pátio']}**" if linha['Tempo no Pátio'] != "-" else ""
                     else:
-                        icon, cor, acao = "🔵", "#cce5ff", "RETORNO À GARAGEM"
-                        tempo_msg = f"⏱️ Tempo total da viagem na rua: **{linha['tempo_formatado']}**" if linha['tempo_formatado'] != "-" else ""
+                        icon, cor, acao = "🔵", "#cce5ff", "RETORNO DE VIAGEM"
+                        tempo_msg = f"⏱️ Tempo total gasto no trajeto externo: **{linha['Tempo em Trânsito']}**" if linha['Tempo em Trânsito'] != "-" else ""
                         
                     st.markdown(
                         f"""
-                        <div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #155724;">
-                            <h4 style="margin: 0; color: #333;">{icon} {acao} — {data_f} às {linha['hora']}</h4>
-                            <p style="margin: 5px 0 0 0; color: #111;"><b>Veículo:</b> {linha['veiculo']} | <b>Motorista:</b> {linha['motorista']}</p>
-                            <p style="margin: 2px 0 0 0; color: #222;"><b>Local informado:</b> {linha['destino']} | <b>Porteiro:</b> {linha['porteiro']}</p>
-                            <p style="margin: 5px 0 0 0; color: #444; font-style: italic;">{tempo_msg}</p>
+                        <div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #333;">
+                            <h4 style="margin: 0;">{icon} {acao} — {data_f} às {linha['hora']}</h4>
+                            <p style="margin: 5px 0 0 0;"><b>Veículo:</b> {linha['veiculo']} | <b>Motorista:</b> {linha['motorista']} | <b>Local:</b> {linha['destino']}</p>
+                            <p style="margin: 2px 0 0 0; font-size: 13px; color: #555;">{tempo_msg} | Operador: {linha['porteiro']}</p>
                         </div>
                         """,
                         unsafe_allow_html=True
                     )
 
-            # ================= OPÇÃO 3: GRÁFICO NATIVO (SEM PACOTE EXTRA) =================
-            elif visao_selecionada == "3. Gráfico de Ocupação":
-                st.markdown("### 📊 Análise de Tempo das Últimas Movimentações (Em minutos)")
-                
+            elif visao_definiva == "📊 Gráfico de Ocupação":
+                st.markdown("### Gráfico de Minutos por Evento")
                 df_validos = df[df['minutos_duracao'] > 0].head(15)
                 if not df_validos.empty:
-                    # Estrutura os dados para o gráfico nativo do Streamlit
-                    chart_data = df_validos.pivot_table(
-                        index='veiculo', 
-                        columns='situacao', 
-                        values='minutos_duracao', 
-                        aggfunc='sum'
-                    ).fillna(0)
-                    
+                    chart_data = df_validos.pivot_table(index='veiculo', columns='situacao', values='minutos_duracao', aggfunc='sum').fillna(0)
                     st.bar_chart(chart_data)
                 else:
-                    st.info("Ainda não há dados cruzados suficientes no banco para gerar o gráfico.")
-                    
+                    st.info("Dados insuficientes no banco para traçar médias gráficas de minutos.")
+
+            # ================= AREA DE EXPORTAÇÃO EXCEL (DENTRO DA ABA) =================
+            st.write("---")
+            st.markdown("### 📥 Relatório de Auditoria para Download")
+            
+            # Converte a tabela de dados calculados para uma planilha Excel em memória
+            buffer_excel = io.BytesIO()
+            with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
+                df_export.to_excel(writer, index=False, sheet_name='Controle Portaria')
+            
+            # Cria o botão oficial de download do Streamlit
+            st.download_button(
+                label="📥 Baixar Histórico Completo em Excel (.xlsx)",
+                data=buffer_excel.getvalue(),
+                file_name=f"relatorio_portaria_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
         else:
             st.info("Nenhum registro na tabela de controle ainda.")
     except Exception as e:
-        st.error(f"Erro ao carregar laboratório de testes: {e}")
+        st.error(f"Erro ao processar as visualizações do histórico: {e}")
