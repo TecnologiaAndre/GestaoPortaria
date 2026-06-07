@@ -3,12 +3,11 @@ from supabase import create_client, Client
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
-import plotly.express as px  # Para o Gráfico de Ocupação
 
 # 1. Configuração da Página
 st.set_page_config(page_title="Controle de Portaria", page_icon="🛃", layout="wide")
 
-# 2. Conexão Secura com o Supabase (Estilo Nuvem)
+# 2. Conexão Segura com o Supabase (Estilo Nuvem)
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
@@ -157,7 +156,6 @@ with aba_historico:
             st.rerun()
             
     with col_selector:
-        # Seletor dinâmico para você testar as 3 visões na hora
         visao_selecionada = st.radio(
             "Escolha o modelo de visualização para testar:",
             options=["1. Cartões de Status (Metrics)", "2. Linha do Tempo (Feed)", "3. Gráfico de Ocupação"],
@@ -177,7 +175,6 @@ with aba_historico:
             df['minutos_duracao'] = 0
             df['tempo_formatado'] = "-"
             
-            # Cálculo de background das durações
             for i in range(len(df)):
                 linha_atual = df.iloc[i]
                 veiculo_atual = linha_atual['veiculo']
@@ -234,35 +231,33 @@ with aba_historico:
                         
                     st.markdown(
                         f"""
-                        <div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #155724 if icon=='🟢' else #004085;">
-                            <h4 style="margin: 0;">{icon} {acao} — {data_f} às {linha['hora']}</h4>
-                            <p style="margin: 5px 0 0 0;"><b>Veículo:</b> {linha['veiculo']} | <b>Motorista:</b> {linha['motorista']}</p>
-                            <p style="margin: 2px 0 0 0;"><b>Local informado:</b> {linha['destino']} | <b>Porteiro:</b> {linha['porteiro']}</p>
-                            <p style="margin: 5px 0 0 0; color: #555; font-style: italic;">{tempo_msg}</p>
+                        <div style="background-color: {cor}; padding: 15px; border-radius: 8px; margin-bottom: 12px; color: #155724;">
+                            <h4 style="margin: 0; color: #333;">{icon} {acao} — {data_f} às {linha['hora']}</h4>
+                            <p style="margin: 5px 0 0 0; color: #111;"><b>Veículo:</b> {linha['veiculo']} | <b>Motorista:</b> {linha['motorista']}</p>
+                            <p style="margin: 2px 0 0 0; color: #222;"><b>Local informado:</b> {linha['destino']} | <b>Porteiro:</b> {linha['porteiro']}</p>
+                            <p style="margin: 5px 0 0 0; color: #444; font-style: italic;">{tempo_msg}</p>
                         </div>
                         """,
                         unsafe_allow_html=True
                     )
 
-            # ================= OPÇÃO 3: GRÁFICO DE OCUPAÇÃO =================
-            elif visao_selecionada == "3. Gráficos de Barra de Ocupação":
-                st.markdown("### 📊 Análise de Tempo de Pátio vs. Tempo de Rua (Em minutos)")
+            # ================= OPÇÃO 3: GRÁFICO NATIVO (SEM PACOTE EXTRA) =================
+            elif visao_selecionada == "3. Gráfico de Ocupação":
+                st.markdown("### 📊 Análise de Tempo das Últimas Movimentações (Em minutos)")
                 
-                df_validos = df[df['minutos_duracao'] > 0]
+                df_validos = df[df['minutos_duracao'] > 0].head(15)
                 if not df_validos.empty:
-                    fig = px.bar(
-                        df_validos.head(20),
-                        x="veiculo",
-                        y="minutos_duracao",
-                        color="situacao",
-                        title="Duração das Últimas Movimentações por Veículo",
-                        labels={"minutos_duracao": "Minutos Corridos", "veiculo": "Veículo", "situacao": "Evento"},
-                        color_discrete_map={"Saindo da Garagem": "#2ecc71", "Retornando à Garagem": "#3498db"},
-                        barmode="group"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Estrutura os dados para o gráfico nativo do Streamlit
+                    chart_data = df_validos.pivot_table(
+                        index='veiculo', 
+                        columns='situacao', 
+                        values='minutos_duracao', 
+                        aggfunc='sum'
+                    ).fillna(0)
+                    
+                    st.bar_chart(chart_data)
                 else:
-                    st.info("Ainda não há dados acumulados suficientes para gerar o gráfico de tempo.")
+                    st.info("Ainda não há dados cruzados suficientes no banco para gerar o gráfico.")
                     
         else:
             st.info("Nenhum registro na tabela de controle ainda.")
