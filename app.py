@@ -312,7 +312,7 @@ with aba_historico:
         st.subheader("Painel de Monitoramento e Histórico")
         visao_definiva = st.radio(
             "Selecione o seu estilo preferido de exibição:",
-            options=["📋 Tabela Clássica", "🗂️ Painel Visual de Vagas", "🕒 Linha do Tempo", "📊 Gráfico de Ocupação"],
+            options=["📋 Tabela Clássica", "🗂️ Painel Visual de Vagas", "🕒 Cronologia de Atividades", "📊 Gráfico de Ocupação"],
             horizontal=True,
             key="usuario_pref_vis"
         )
@@ -321,25 +321,21 @@ with aba_historico:
         if visao_definiva == "📋 Tabela Clássica":
             st.dataframe(df_export, use_container_width=True)
             
-        elif visao_definiva == "🗂️ Painel Visual de Vagas (Cinema)":
+        elif visao_definiva == "🗂️ Painel Visual de Vagas":
             # Extrai a última movimentação registrada de cada ônibus existente na base
             veiculos_unicos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
             
-            # Divisão Lógica baseada no seu critério:
-            # - Retornando à Garagem = NO PÁTIO
-            # - Saindo da Garagem = NA RUA
+            # Divisão Lógica: Retornando à Garagem = NO PÁTIO | Saindo da Garagem = NA RUA
             patio_list = veiculos_unicos[veiculos_unicos['situacao'] == "Retornando à Garagem"]
             rua_list = veiculos_unicos[veiculos_unicos['situacao'] == "Saindo da Garagem"]
             
             # --- SEÇÃO 1: NO PÁTIO (GARAGEM) ---
             st.markdown("### 🏢 ÔNIBUS NO PÁTIO (Estacionados na Garagem)")
             if not patio_list.empty:
-                # Criamos um grid dinâmico com 4 colunas por linha (estilo poltronas de cinema)
                 cols_patio = st.columns(4)
                 for idx, (_, car) in enumerate(patio_list.iterrows()):
                     col_atual = cols_patio[idx % 4]
                     with col_atual:
-                        # Container estilizado simulando a vaga ocupada
                         with st.container(border=True):
                             st.markdown(
                                 f"""
@@ -379,7 +375,7 @@ with aba_historico:
             else:
                 st.success("✅ Todos os ônibus estão recolhidos na garagem!")
                         
-        elif visao_definiva == "🕒 Linha do Tempo (Feed)":
+        elif visao_definiva == "🕒 Cronologia de Atividades":
             for _, linha in df_export.head(15).iterrows():
                 data_f = datetime.strptime(linha['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
                 icon, cor = ("🟢", "#d4edda") if linha['situacao'] == "Saindo da Garagem" else ("🔵", "#cce5ff")
