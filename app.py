@@ -312,7 +312,7 @@ with aba_historico:
         st.subheader("Painel de Monitoramento e Histórico")
         visao_definiva = st.radio(
             "Selecione o seu estilo preferido de exibição:",
-            options=["📋 Tabela Clássica", "🗂️ Painel Visual de Vagas (Cinema)", "🕒 Linha do Tempo (Feed)", "📊 Gráfico de Ocupação"],
+            options=["📋 Tabela Clássica", "🗂️ Painel Visual de Vagas", "🕒 Linha do Tempo", "📊 Gráfico de Ocupação"],
             horizontal=True,
             key="usuario_pref_vis"
         )
