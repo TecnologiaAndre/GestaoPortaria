@@ -77,7 +77,6 @@ def realizar_login(usuario, senha):
             eh_primeiro_acesso = registro.get("primeiro_acesso")
             
             if eh_primeiro_acesso is True:
-                # Regra de Negócio: Senhas provisórias de novos porteiros ficam em texto limpo criadas via Admin
                 if senha_limpa == senha_banco:
                     st.session_state.fase_troca_senha = True
                     st.session_state.usuario_pendente_senha = registro["nome_porteiro"]
@@ -86,7 +85,6 @@ def realizar_login(usuario, senha):
                     st.error("❌ Senha incorreta para o primeiro acesso.")
             
             else:
-                # Senhas normais já passaram pelo fluxo de transição e estão em Hash
                 senha_digitada_hash = gerar_hash_senha(senha_limpa)
                 if senha_digitada_hash == senha_banco:
                     st.session_state.autenticado = True
@@ -105,7 +103,6 @@ def realizar_login(usuario, senha):
 # Guardrail de Fluxo: Impede a renderização do app caso o usuário não esteja logado
 if not st.session_state.autenticado:
     
-    # Sub-tela 1: Forçar Atualização de Credenciais no Primeiro Acesso
     if st.session_state.fase_troca_senha:
         st.markdown("<h2 style='text-align: center;'>🔒 Atualização de Segurança Obrigatória (LGPD)</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #555;'>Detectamos que este é o seu primeiro acesso. Sua nova senha deve conter no mínimo 6 caracteres, incluindo letras maiúsculas, minúsculas e números.</p>", unsafe_allow_html=True)
@@ -124,16 +121,12 @@ if not st.session_state.autenticado:
                     elif nova_senha != confirma_senha:
                         st.error("❌ As senhas digitadas não coincidem. Tente novamente.")
                     else:
-                        # Executa a checagem com Regex das regras de complexidade estabelecidas
                         senha_valida, mensagem_erro = validar_complexidade_senha(nova_senha)
-                        
                         if not senha_valida:
                             st.error(mensagem_erro)
                         else:
                             try:
-                                # A senha trafega via SSL e é convertida localmente antes do INSERT no Supabase
                                 nova_senha_hash = gerar_hash_senha(nova_senha)
-                                
                                 supabase.table("cadastro_porteiros")\
                                     .update({"senha": nova_senha_hash, "primeiro_acesso": False})\
                                     .eq("nome_porteiro", st.session_state.usuario_pendente_senha)\
@@ -155,7 +148,6 @@ if not st.session_state.autenticado:
                 st.rerun()
         st.stop()
 
-    # Sub-tela 2: Interface de Autenticação Padrão
     else:
         st.markdown("<h2 style='text-align: center;'>🛃 Acesso Restrito - Portaria</h2>", unsafe_allow_html=True)
         
@@ -184,7 +176,6 @@ data_atual = agora_brasilia.date()
 hora_atual = agora_brasilia.time().strftime("%H:%M:%S")
 
 
-# Caching de tabelas auxiliares para otimizar custos e performance de requisições ao Supabase.
 @st.cache_data(ttl=60)
 def carregar_dados_cadastro():
     """Busca listas de apoio para alimentar os seletores da portaria. TTL de 60s."""
@@ -204,7 +195,6 @@ def carregar_dados_cadastro():
 
 motoristas, veiculos, locais = carregar_dados_cadastro()
 
-# Fallbacks defensivos para evitar que a UI quebre caso as tabelas estejam vazias.
 if not motoristas: motoristas = ["Nenhum motorista encontrado"]
 if not veiculos: veiculos = ["Nenhum veículo encontrado"]
 if not locais: locais = ["Nenhum local encontrado"]
@@ -229,7 +219,7 @@ aba_registro, aba_historico, aba_plantao = st.tabs(["📝 Registrar Movimentaç�
 # ================= ABA 1: REGISTRO DE MOVIMENTAÇÃO =================
 with aba_registro:
     if st.button("🔄 Atualizar Listas"):
-        st.cache_data.clear() # Limpa o cache para forçar nova requisição ao Supabase
+        st.cache_data.clear()
         st.rerun()
 
     with st.form(key="form_portaria", clear_on_submit=True):
@@ -280,19 +270,16 @@ if dados_carregados:
     df_base['datetime_completo'] = pd.to_datetime(df_base['data'] + ' ' + df_base['hora'])
     df_base = df_base.sort_values('datetime_completo', ascending=True)
     
-    # Inicialização das colunas de cálculo de métricas operacionais
     df_base['minutos_duracao'] = 0
     df_base['Tempo no Pátio'] = "-"
     df_base['Tempo em Trânsito'] = "-"
     
-    # Algorítmo de reconstrução de estado e delta de tempo
     for i in range(len(df_base)):
         linha_atual = df_base.iloc[i]
         veiculo_atual = linha_atual['veiculo']
         sit_atual = linha_atual['situacao']
         time_atual = linha_atual['datetime_completo']
         
-        # Localiza o histórico cronológico exclusivo deste veículo específico
         df_anterior = df_base[(df_base['veiculo'] == veiculo_atual) & (df_base['datetime_completo'] < time_atual)]
         if not df_anterior.empty:
             ultima_linha = df_anterior.iloc[-1]
@@ -305,13 +292,11 @@ if dados_carregados:
             minutos = (total_segundos % 3600) // 60
             tempo_formatado = f"{horas}h {minutos}m" if horas > 0 else f"{minutos} min"
             
-            # Validação do par de eventos lógicos para atribuição correta das colunas
             if sit_atual == "Retornando à Garagem" and sit_anterior == "Saindo da Garagem":
                 df_base.at[df_base.index[i], 'Tempo em Trânsito'] = tempo_formatado
             elif sit_atual == "Saindo da Garagem" and sit_anterior == "Retornando à Garagem":
                 df_base.at[df_base.index[i], 'Tempo no Pátio'] = tempo_formatado
 
-    # Organização de Visualização: Reverte para ordem descendente para exibição em tela de logs recentes
     df_base = df_base.sort_values('id', ascending=False)
     df_export = df_base.drop(columns=['datetime_completo', 'minutos_duracao'])
     colunas_ordenadas = ['id', 'data', 'hora', 'veiculo', 'motorista', 'destino', 'situacao', 'Tempo no Pátio', 'Tempo em Trânsito', 'porteiro']
@@ -327,7 +312,7 @@ with aba_historico:
         st.subheader("Painel de Monitoramento e Histórico")
         visao_definiva = st.radio(
             "Selecione o seu estilo preferido de exibição:",
-            options=["📋 Tabela Clássica", "🗂️ Cartões de Status (Metrics)", "🕒 Linha do Tempo (Feed)", "📊 Gráfico de Ocupação"],
+            options=["📋 Tabela Clássica", "🗂️ Painel Visual de Vagas (Cinema)", "🕒 Linha do Tempo (Feed)", "📊 Gráfico de Ocupação"],
             horizontal=True,
             key="usuario_pref_vis"
         )
@@ -336,20 +321,63 @@ with aba_historico:
         if visao_definiva == "📋 Tabela Clássica":
             st.dataframe(df_export, use_container_width=True)
             
-        elif visao_definiva == "🗂️ Cartões de Status (Metrics)":
+        elif visao_definiva == "🗂️ Painel Visual de Vagas (Cinema)":
+            # Extrai a última movimentação registrada de cada ônibus existente na base
             veiculos_unicos = df_base.drop_duplicates(subset=['veiculo'], keep='first')
-            cols = st.columns(3)
-            for idx, (_, car) in enumerate(veiculos_unicos.iterrows()):
-                col_atual = cols[idx % 3]
-                with col_atual:
-                    if car['situacao'] == "Saindo da Garagem":
-                        status_msg, sub_val = "🟢 EM TRÂNSITO (RUA)", car['Tempo em Trânsito'] if car['Tempo em Trânsito'] != "-" else "Em rota"
-                    else:
-                        status_msg, sub_val = "🔵 NA GARAGEM (PÁTIO)", car['Tempo no Pátio'] if car['Tempo no Pátio'] != "-" else "Estacionado"
-                    with st.container(border=True):
-                        st.markdown(f"### {car['veiculo']}")
-                        st.markdown(f"👤 **Motorista:** {car['motorista']}  \n🏢 **Local:** {car['destino']}")
-                        st.metric(label=status_msg, value=f"Duração: {sub_val}")
+            
+            # Divisão Lógica baseada no seu critério:
+            # - Retornando à Garagem = NO PÁTIO
+            # - Saindo da Garagem = NA RUA
+            patio_list = veiculos_unicos[veiculos_unicos['situacao'] == "Retornando à Garagem"]
+            rua_list = veiculos_unicos[veiculos_unicos['situacao'] == "Saindo da Garagem"]
+            
+            # --- SEÇÃO 1: NO PÁTIO (GARAGEM) ---
+            st.markdown("### 🏢 ÔNIBUS NO PÁTIO (Estacionados na Garagem)")
+            if not patio_list.empty:
+                # Criamos um grid dinâmico com 4 colunas por linha (estilo poltronas de cinema)
+                cols_patio = st.columns(4)
+                for idx, (_, car) in enumerate(patio_list.iterrows()):
+                    col_atual = cols_patio[idx % 4]
+                    with col_atual:
+                        # Container estilizado simulando a vaga ocupada
+                        with st.container(border=True):
+                            st.markdown(
+                                f"""
+                                <div style='background-color: #e6f4ea; padding: 5px; border-radius: 4px;'>
+                                    <h4 style='margin: 0; color: #137333; text-align: center;'>🚌 {car['veiculo']}</h4>
+                                </div>
+                                """, 
+                                unsafe_allow_html=True
+                            )
+                            st.caption(f"👤 **Motorista:** {car['motorista']}")
+                            st.caption(f"🕒 **Entrada:** {car['hora']}")
+                            st.caption(f"⏳ **Estacionado há:** {car['Tempo no Pátio'] if car['Tempo no Pátio'] != '-' else 'N/D'}")
+            else:
+                st.info("Nenhum ônibus no pátio neste momento.")
+                
+            st.write("---")
+            
+            # --- SEÇÃO 2: FORA DO PÁTIO (NA RUA) ---
+            st.markdown("### 🛣️ ÔNIBUS FORA DO PÁTIO (Em Operação / Rua)")
+            if not rua_list.empty:
+                cols_rua = st.columns(4)
+                for idx, (_, car) in enumerate(rua_list.iterrows()):
+                    col_atual = cols_rua[idx % 4]
+                    with col_atual:
+                        with st.container(border=True):
+                            st.markdown(
+                                f"""
+                                <div style='background-color: #fce8e6; padding: 5px; border-radius: 4px;'>
+                                    <h4 style='margin: 0; color: #c5221f; text-align: center;'>🚍 {car['veiculo']}</h4>
+                                </div>
+                                """, 
+                                unsafe_allow_html=True
+                            )
+                            st.caption(f"👤 **Motorista:** {car['motorista']}")
+                            st.caption(f"🏢 **Local:** {car['destino']}")
+                            st.caption(f"⏳ **Em trânsito há:** {car['Tempo em Trânsito'] if car['Tempo em Trânsito'] != '-' else 'Em rota'}")
+            else:
+                st.success("✅ Todos os ônibus estão recolhidos na garagem!")
                         
         elif visao_definiva == "🕒 Linha do Tempo (Feed)":
             for _, linha in df_export.head(15).iterrows():
@@ -376,7 +404,7 @@ with aba_historico:
 # ================= ABA 3: PASSAGEM DE PLANTÃO INTEGRADA =================
 with aba_plantao:
     st.subheader("🔄 Fechamento e Passagem de Turno (Últimas 12 Horas)")
-    st.write("Confira e audite as ocorrências do seu turno de 12 hours antes de salvar a passagem definitiva.")
+    st.write("Confira e audite as ocorrências do seu turno de 12 horas antes de salvar a passagem definitiva.")
     
     if not df_base.empty:
         limite_12h = (agora_brasilia - timedelta(hours=12)).replace(tzinfo=None)
